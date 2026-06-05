@@ -56,6 +56,20 @@ export function createApp() {
         return c.json({ ok: true, store: outbox.kind || 'unknown', version: VERSION });
     });
 
+    // 🔧 临时诊断（排查带图消息生成失败）：同步跑一次生成，直接返回结果/完整错误。确认后删。
+    app.post('/debug-generate', requireSecret, async (c) => {
+        let body;
+        try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
+        const { messages, settings, maxTokens } = body || {};
+        if (!Array.isArray(messages) || !settings) return c.json({ error: 'messages/settings required' }, 400);
+        try {
+            const content = await runGeneration(settings, messages, maxTokens || null);
+            return c.json({ ok: true, contentPreview: String(content).slice(0, 300), len: String(content).length });
+        } catch (e) {
+            return c.json({ ok: false, error: String(e?.message || e), status: e?.status, detail: e?.detail });
+        }
+    });
+
     // 以下全部要鉴权
     app.use('/generate', requireSecret);
     app.use('/outbox', requireSecret);
