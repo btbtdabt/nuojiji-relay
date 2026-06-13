@@ -42,6 +42,29 @@ export class KvOutboxStore {
         await this.kv.put(`idx:${inboxId}`, JSON.stringify(pruned), { expirationTtl: TTL_SEC });
     }
 
+    async _listItemsByPrefix(inboxId) {
+        if (!this.kv || typeof this.kv.list !== 'function') return [];
+
+        const prefix = `o:${inboxId}:`;
+        const out = [];
+        let cursor;
+        do {
+            const page = await this.kv.list({ prefix, cursor });
+            for (const key of page.keys || []) {
+                const raw = await this.kv.get(key.name);
+                if (!raw) continue;
+                try {
+                    const item = JSON.parse(raw);
+                    const id = String(item.id || key.name.slice(prefix.length));
+                    const createdAt = Number(item.createdAt) || 0;
+                    if (id && createdAt > 0) out.push({ id, createdAt, item });
+                } catch { /* skip corrupt */ }
+            }
+            cursor = page.list_complete ? null : page.cursor;
+        } while (cursor);
+        return out;
+    }
+
     async put(inboxId, item) {
         await this.kv.put(`o:${inboxId}:${item.id}`, JSON.stringify(item), { expirationTtl: TTL_SEC });
         const idx = await this._getIndex(inboxId);
@@ -53,15 +76,46 @@ export class KvOutboxStore {
 
     async list(inboxId, sinceTs = 0) {
         const idx = await this._getIndex(inboxId);
-        const wanted = idx.filter((e) => e.createdAt > sinceTs).sort((a, b) => a.createdAt - b.createdAt);
-        const out = [];
-        for (const e of wanted) {
+        const itemsById = new Map();
+        const liveIndex = [];
+        let indexChanged = false;
+
+        for (const e of idx) {
             const raw = await this.kv.get(`o:${inboxId}:${e.id}`);
             if (raw) {
-                try { out.push(JSON.parse(raw)); } catch { /* skip corrupt */ }
+                try {
+                    const item = JSON.parse(raw);
+                    const id = String(item.id || e.id);
+                    const createdAt = Number(item.createdAt) || Number(e.createdAt) || 0;
+                    if (id && createdAt > 0) {
+                        itemsById.set(id, { ...item, id, createdAt });
+                        liveIndex.push({ id, createdAt });
+                    }
+                } catch { indexChanged = true; }
+            } else {
+                indexChanged = true;
             }
             // raw 为 null = item 已过期被 KV 清，但索引还在 → 下面 list 时不返回；ack/prune 会清索引
         }
+
+        // KV does not offer atomic read-modify-write for the index. A concurrent
+        // ack can overwrite a fresh put and leave a valid item without idx entry.
+        // Prefix list is eventually consistent, so it is only a recovery path:
+        // immediate reads still use idx, while later polls can repair orphans.
+        for (const entry of await this._listItemsByPrefix(inboxId)) {
+            if (itemsById.has(entry.id)) continue;
+            itemsById.set(entry.id, entry.item);
+            liveIndex.push({ id: entry.id, createdAt: entry.createdAt });
+            indexChanged = true;
+        }
+
+        if (indexChanged) {
+            try { await this._putIndex(inboxId, liveIndex); } catch { /* best-effort repair */ }
+        }
+
+        const out = [...itemsById.values()]
+            .filter((item) => (Number(item.createdAt) || 0) > sinceTs)
+            .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
         return out;
     }
 
