@@ -394,7 +394,7 @@ async function testGenerateImmediatelyUpdatesProactiveInteractionState() {
     const originalNow = Date.now;
     const originalRandom = Math.random;
     const originalFetch = globalThis.fetch;
-    const now = 36_000_000;
+    let now = 36_000_000;
     let fetchCalls = 0;
 
     Date.now = () => now;
@@ -406,7 +406,12 @@ async function testGenerateImmediatelyUpdatesProactiveInteractionState() {
 
         const storedDuringGenerate = parseStoredPair(kv);
         assert.equal(storedDuringGenerate.lastInteractionAt, now);
+        assert.equal(storedDuringGenerate.generationStartedAt, now);
+        assert.match(storedDuringGenerate.generationClaimId, /^reply_req-user-reply_/);
         assert.equal(storedDuringGenerate.lifeState.unansweredStreak, 0);
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+
+        now += PROACTIVE_USER_REPLY_GRACE_MS + 1_000;
         assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
 
         return new Response(JSON.stringify({
@@ -468,6 +473,8 @@ async function testGenerateImmediatelyUpdatesProactiveInteractionState() {
 
         const stored = parseStoredPair(kv);
         assert.equal(stored.lastInteractionAt, now);
+        assert.equal(stored.generationStartedAt, 0);
+        assert.equal(stored.generationClaimId, null);
         assert.equal(stored.lifeState.unansweredStreak, 0);
     } finally {
         Date.now = originalNow;

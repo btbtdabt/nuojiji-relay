@@ -125,10 +125,16 @@ export function createApp() {
             return c.json({ duplicate: true, requestId }, 409);
         }
         await outbox.markRequest(requestId);
+        const proactiveUserId = meta?.userId != null ? String(meta.userId) : null;
+        const proactiveCharId = meta?.charId != null ? String(meta.charId) : null;
+        const replyGenerationClaimId = (proactiveUserId && proactiveCharId)
+            ? `reply_${requestId}_${startedAt}` : null;
         if (meta?.userId != null && meta?.charId != null) {
             try {
-                await proactive.patch(inboxId, String(meta.userId), String(meta.charId), {
+                await proactive.patch(inboxId, proactiveUserId, proactiveCharId, {
                     lastInteractionAt: startedAt,
+                    generationStartedAt: startedAt,
+                    generationClaimId: replyGenerationClaimId,
                     lifeState: { unansweredStreak: 0 },
                 });
             } catch (e) {
@@ -143,20 +149,37 @@ export function createApp() {
         const id = makeMessageId(requestId);
         let item;
         try {
-            const content = await runGeneration(settings, messages, maxTokens);
-            item = {
-                id, requestId,
-                charId: meta?.charId ?? null, roundId: meta?.roundId ?? null, userId: meta?.userId ?? null,
-                content, error: null, createdAt: nowMs(),
-            };
-        } catch (e) {
-            item = {
-                id, requestId,
-                charId: meta?.charId ?? null, roundId: meta?.roundId ?? null, userId: meta?.userId ?? null,
-                content: null, error: String(e?.message || e), createdAt: nowMs(),
-            };
+            try {
+                const content = await runGeneration(settings, messages, maxTokens);
+                item = {
+                    id, requestId,
+                    charId: meta?.charId ?? null, roundId: meta?.roundId ?? null, userId: meta?.userId ?? null,
+                    content, error: null, createdAt: nowMs(),
+                };
+            } catch (e) {
+                item = {
+                    id, requestId,
+                    charId: meta?.charId ?? null, roundId: meta?.roundId ?? null, userId: meta?.userId ?? null,
+                    content: null, error: String(e?.message || e), createdAt: nowMs(),
+                };
+            }
+            await outbox.put(inboxId, item);
+        } finally {
+            if (replyGenerationClaimId && proactiveUserId && proactiveCharId) {
+                try {
+                    const current = await proactive.get?.(inboxId, proactiveUserId, proactiveCharId);
+                    if (current?.generationClaimId === replyGenerationClaimId) {
+                        await proactive.patch(inboxId, proactiveUserId, proactiveCharId, {
+                            generationStartedAt: 0,
+                            generationClaimId: null,
+                            lastInteractionAt: nowMs(),
+                        });
+                    }
+                } catch (e) {
+                    console.warn('[generate] proactive generation claim cleanup failed:', e?.message);
+                }
+            }
         }
-        await outbox.put(inboxId, item);
 
         await logAgentEvent(c.env, {
             type: 'relay_generate',
