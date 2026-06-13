@@ -257,6 +257,7 @@ export class KvProactiveStore {
         const merged = mergeProactiveRecord(prev, rec);
         const changed = !prevRaw || !proactiveRecordsBehaviorallyEqual(prev, merged);
         if (!changed) {
+            if (rec.lastFiredAt !== undefined) await this._putFireAt(pairKey, merged.lastFiredAt);
             await this._addToIdx(pairKey);
             return { changed: false, created: false, record: prev };
         }
@@ -273,9 +274,14 @@ export class KvProactiveStore {
         const prev = JSON.parse(prevRaw);
         const merged = mergeProactiveRecord(prev, patch);
         const changed = !proactiveRecordsBehaviorallyEqual(prev, merged);
-        if (!changed) return { changed: false, record: prev };
+        if (!changed) {
+            if (patch.lastFiredAt !== undefined) await this._putFireAt(pairKey, merged.lastFiredAt);
+            await this._addToIdx(pairKey);
+            return { changed: false, record: prev };
+        }
         await this.kv.put(key, JSON.stringify(merged));
         if (patch.lastFiredAt !== undefined) await this._putFireAt(pairKey, merged.lastFiredAt);
+        await this._addToIdx(pairKey);
         return { changed: true, record: merged };
     }
     async remove(inboxId, userId, charId) {

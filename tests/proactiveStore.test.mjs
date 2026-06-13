@@ -360,6 +360,87 @@ async function testKvDuplicateUpsertRepairsMissingIndex() {
     assert.equal(rows[0].charId, 'char');
 }
 
+async function testKvPatchRepairsMissingIndexWhenChanged() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    kv.putCalls = [];
+
+    const result = await store.patch('inbox', 'user', 'char', { avatarUrl: '/avatar/char' });
+    assert.equal(result.changed, true);
+    assert.equal(kv.putCalls.some((call) => call.key === 'p:inbox:user:char'), true);
+    assert.equal(kv.putCalls.some((call) => call.key === 'pidx'), true);
+
+    const rows = await store.listByInbox('inbox');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].avatarUrl, '/avatar/char');
+}
+
+async function testKvPatchRepairsMissingIndexWhenUnchanged() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+        avatarUrl: '/avatar/char',
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    kv.putCalls = [];
+
+    const result = await store.patch('inbox', 'user', 'char', { avatarUrl: '/avatar/char' });
+    assert.equal(result.changed, false);
+    assert.equal(kv.putCalls.some((call) => call.key === 'p:inbox:user:char'), false);
+    assert.equal(kv.putCalls.some((call) => call.key === 'pidx'), true);
+
+    const rows = await store.listByInbox('inbox');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].avatarUrl, '/avatar/char');
+}
+
+async function testKvNoopFirePatchRepairsRuntimeMirrors() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+        lastFiredAt: 30_000,
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    kv.putCalls = [];
+
+    const result = await store.patch('inbox', 'user', 'char', { lastFiredAt: 30_000 });
+    assert.equal(result.changed, false);
+    assert.equal(kv.putCalls.some((call) => call.key === 'p:inbox:user:char'), false);
+    assert.equal(kv.putCalls.some((call) => call.key === 'pidx'), true);
+    assert.equal(kv.putCalls.some((call) => call.key === 'pf:inbox:user:char'), true);
+    assert.equal(await kv.get('pf:inbox:user:char'), '30000');
+}
+
 testMergeKeepsNewerServerTiming();
 testMergeAcceptsNewerClientTiming();
 testMergeAllowsStreakResetAfterUserReply();
@@ -373,4 +454,7 @@ await testKvFireMirrorKeepsUserReplyReset();
 await testKvFireMirrorCountsOneMissedFire();
 await testKvFireAtMirrorIsMonotonic();
 await testKvDuplicateUpsertRepairsMissingIndex();
+await testKvPatchRepairsMissingIndexWhenChanged();
+await testKvPatchRepairsMissingIndexWhenUnchanged();
+await testKvNoopFirePatchRepairsRuntimeMirrors();
 console.log('proactiveStore tests passed');
