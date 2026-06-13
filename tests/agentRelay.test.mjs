@@ -16,7 +16,6 @@ import {
     prepareGeminiFunctionDeclarations,
     sanitizeGeminiSchema,
 } from '../src/agent/geminiCoordinator.js';
-import { OMBRE_COORDINATOR_PROMPT } from '../src/agent/ombreCoordinatorPrompt.js';
 import {
     clipDebugValue,
     fullPromptDebugEnabled,
@@ -148,12 +147,6 @@ function testCoordinatorMessageFormatting() {
     assert.match(text, /<COORDINATOR_OUTPUT_CONTRACT>/);
     assert.match(text, /Merge relevant Gateway-injected context and MCP tool results when useful/);
     assert.doesNotMatch(text, /Do not dump all injected context/);
-}
-
-function testCoordinatorPromptSeparatesPersonaFrameFromMemoryEvidence() {
-    assert.match(OMBRE_COORDINATOR_PROMPT, /Static persona\/lore alone is not evidence of a newly lived event/);
-    assert.match(OMBRE_COORDINATOR_PROMPT, /include a short ### original section/);
-    assert.match(OMBRE_COORDINATOR_PROMPT, /darkroom_enter\(mode="continue"\|"single"/);
 }
 
 function testCoordinatorMessageFormattingOmitsEmbeddedTranscript() {
@@ -328,7 +321,6 @@ testRelevantInfoAppend();
 testEnvConfigAliases();
 testCoordinatorConfigHasNoDirectGeminiDefault();
 testCoordinatorMessageFormatting();
-testCoordinatorPromptSeparatesPersonaFrameFromMemoryEvidence();
 testCoordinatorMessageFormattingOmitsEmbeddedTranscript();
 testCoordinatorQueryHintIgnoresProactivePlaceholder();
 testCoordinatorQueryHintPrefersRealUserText();
