@@ -2,6 +2,7 @@ const DEBUG_INDEX_KEY = 'dbg:agent:index';
 const DEBUG_ITEM_PREFIX = 'dbg:agent:';
 const DEBUG_TTL_SEC = 48 * 60 * 60;
 const DEBUG_CAP = 120;
+const DEFAULT_FULL_DEBUG_CHARS = 30_000;
 
 let memoryEvents = [];
 
@@ -19,6 +20,62 @@ function makeDebugId() {
 function clip(value, limit = 240) {
     const text = String(value || '');
     return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function envValue(env, keys, fallback = '') {
+    for (const key of keys) {
+        const value = env?.[key] ?? (typeof process !== 'undefined' ? process.env?.[key] : undefined);
+        if (value != null && String(value).trim() !== '') return String(value).trim();
+    }
+    return fallback;
+}
+
+function envFlag(env, keys, fallback = false) {
+    const raw = envValue(env, keys, '');
+    if (!raw) return fallback;
+    return /^(1|true|yes|on)$/i.test(raw);
+}
+
+function envNumber(env, keys, fallback) {
+    const raw = envValue(env, keys, '');
+    if (!raw) return fallback;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
+}
+
+function sensitiveKey(key) {
+    return /key|token|secret|authorization|password|credential/i.test(String(key || ''));
+}
+
+export function fullPromptDebugEnabled(env) {
+    return envFlag(env, ['AGENT_DEBUG_FULL_PROMPT'], false);
+}
+
+export function fullPromptDebugLimit(env) {
+    return Math.max(1_000, Math.min(200_000, envNumber(env, ['AGENT_DEBUG_FULL_LIMIT_CHARS'], DEFAULT_FULL_DEBUG_CHARS)));
+}
+
+export function clipDebugValue(value, limit = DEFAULT_FULL_DEBUG_CHARS, depth = 0) {
+    if (value == null) return value;
+    if (typeof value === 'string') {
+        if (value.length <= limit) return value;
+        return `${value.slice(0, limit)}\n...[truncated ${value.length - limit} chars]`;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    if (depth >= 8) return '[max depth reached]';
+    if (Array.isArray(value)) {
+        const items = value.slice(0, 100).map((item) => clipDebugValue(item, limit, depth + 1));
+        if (value.length > items.length) items.push(`[truncated ${value.length - items.length} items]`);
+        return items;
+    }
+    if (typeof value === 'object') {
+        const out = {};
+        for (const [key, item] of Object.entries(value)) {
+            out[key] = sensitiveKey(key) ? '[redacted]' : clipDebugValue(item, limit, depth + 1);
+        }
+        return out;
+    }
+    return String(value);
 }
 
 function summarizeError(error) {

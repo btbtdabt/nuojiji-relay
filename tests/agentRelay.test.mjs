@@ -13,7 +13,14 @@ import {
     prepareGeminiFunctionDeclarations,
     sanitizeGeminiSchema,
 } from '../src/agent/geminiCoordinator.js';
-import { listAgentEvents, logAgentEvent, summarizeAiSettings } from '../src/agent/agentDebug.js';
+import {
+    clipDebugValue,
+    fullPromptDebugEnabled,
+    fullPromptDebugLimit,
+    listAgentEvents,
+    logAgentEvent,
+    summarizeAiSettings,
+} from '../src/agent/agentDebug.js';
 
 class FakeKv {
     constructor() {
@@ -156,6 +163,25 @@ function testSummarizeAiSettingsMasksKeys() {
     assert.equal(summary.hasSecondaryApiKey, true);
 }
 
+function testFullDebugHelpers() {
+    const env = {
+        AGENT_DEBUG_FULL_PROMPT: '1',
+        AGENT_DEBUG_FULL_LIMIT_CHARS: '1200',
+    };
+    assert.equal(fullPromptDebugEnabled(env), true);
+    assert.equal(fullPromptDebugLimit(env), 1200);
+
+    const clipped = clipDebugValue({
+        apiKey: 'secret',
+        nested: { Authorization: 'Bearer secret', text: 'abcdef' },
+        long: 'x'.repeat(10),
+    }, 4);
+
+    assert.equal(clipped.apiKey, '[redacted]');
+    assert.equal(clipped.nested.Authorization, '[redacted]');
+    assert.match(clipped.long, /^xxxx\n\.\.\.\[truncated 6 chars\]$/);
+}
+
 testSchemaSanitizerRemovesUnsupportedFields();
 testFunctionNameMapping();
 testPrepareDeclarationsKeepsOriginalToolName();
@@ -165,4 +191,5 @@ testCoordinatorMessageFormatting();
 testGeminiFunctionResponseUsesUserRole();
 await testDebugEventStore();
 testSummarizeAiSettingsMasksKeys();
+testFullDebugHelpers();
 console.log('agentRelay tests passed');

@@ -1,7 +1,15 @@
 import { runGeneration } from '../ai/aiCaller.js';
 import { runOmbreCoordinator } from './geminiCoordinator.js';
 import { NO_RELEVANT_INFO } from './ombreCoordinatorPrompt.js';
-import { debugError, logAgentEvent, listAgentEvents, summarizeMessages } from './agentDebug.js';
+import {
+    clipDebugValue,
+    debugError,
+    fullPromptDebugEnabled,
+    fullPromptDebugLimit,
+    logAgentEvent,
+    listAgentEvents,
+    summarizeMessages,
+} from './agentDebug.js';
 
 const RELEVANT_INFO_HEADER = '[Relevant info that could help as context]';
 
@@ -130,6 +138,8 @@ export async function handleAgentChatCompletions(c) {
 
     const coordinatorConfig = buildCoordinatorConfig(c.env);
     const mcpServer = buildMcpServerConfig(c.env);
+    const debugFull = fullPromptDebugEnabled(c.env);
+    const debugCharLimit = fullPromptDebugLimit(c.env);
     let relevantInfo = '';
     let coordinatorDebug = { skipped: '' };
     let coordinatorError = null;
@@ -140,6 +150,8 @@ export async function handleAgentChatCompletions(c) {
                 messages: body.messages,
                 mcpServer,
                 ...coordinatorConfig,
+                debugFull,
+                debugCharLimit,
             });
             relevantInfo = result.relevantInfo || '';
             coordinatorDebug = result.debug || coordinatorDebug;
@@ -173,6 +185,13 @@ export async function handleAgentChatCompletions(c) {
     }
 
     const finalMessages = appendRelevantInfoMessage(body.messages, relevantInfo);
+    const fullDebugPayload = debugFull
+        ? {
+            original_messages: clipDebugValue(body.messages, debugCharLimit),
+            relevant_info: clipDebugValue(relevantInfo, debugCharLimit),
+            final_messages: clipDebugValue(finalMessages, debugCharLimit),
+        }
+        : undefined;
     const maxTokens = body.max_tokens || body.max_completion_tokens || body.maxTokens || null;
     let content;
     try {
@@ -192,6 +211,7 @@ export async function handleAgentChatCompletions(c) {
                 relevantInfoChars: relevantInfo.length,
             },
             error: debugError(error),
+            ...(fullDebugPayload ? { full: fullDebugPayload } : {}),
             durationMs: Date.now() - startedAt,
         });
         return c.json({
@@ -219,6 +239,7 @@ export async function handleAgentChatCompletions(c) {
             relevantInfoChars: relevantInfo.length,
             responseChars: String(content || '').length,
         },
+        ...(fullDebugPayload ? { full: fullDebugPayload } : {}),
         durationMs: Date.now() - startedAt,
     });
     if (body.stream === true) {

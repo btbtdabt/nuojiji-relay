@@ -1,6 +1,7 @@
 import { createMcpSession, mcpContentToText } from '../mcp/mcpClient.js';
 import { assertSafeApiUrl } from '../ai/requestBuilder.js';
 import { NO_RELEVANT_INFO, OMBRE_COORDINATOR_PROMPT } from './ombreCoordinatorPrompt.js';
+import { clipDebugValue } from './agentDebug.js';
 
 const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_COORDINATOR_MODEL = 'gemini-3.5-flash';
@@ -288,6 +289,8 @@ export async function runOmbreCoordinator({
     model = DEFAULT_COORDINATOR_MODEL,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     maxToolRounds = DEFAULT_MAX_TOOL_ROUNDS,
+    debugFull = false,
+    debugCharLimit = 30_000,
     fetchImpl,
 }) {
     const debug = { skipped: '', tool_count: 0, rounds: 0, calls: [], errors: [] };
@@ -297,12 +300,26 @@ export async function runOmbreCoordinator({
     const mcp = await createMcpSession(mcpServer, { timeoutMs });
     const tools = await mcp.listTools();
     debug.tool_count = tools.length;
+    if (debugFull) {
+        debug.full = {
+            coordinator_system_prompt: clipDebugValue(OMBRE_COORDINATOR_PROMPT, debugCharLimit),
+            tools: clipDebugValue(tools.map((tool) => ({
+                name: tool?.name || '',
+                description: tool?.description || '',
+                inputSchema: tool?.inputSchema || tool?.parameters || {},
+            })), debugCharLimit),
+        };
+    }
     const { functionDeclarations, nameMap } = prepareGeminiFunctionDeclarations(tools);
     if (functionDeclarations.length === 0) return { relevantInfo: '', skipped: 'no mcp tools', debug: { ...debug, skipped: 'no mcp tools' } };
 
+    const coordinatorInput = formatMessagesForCoordinator(messages);
+    if (debugFull) {
+        debug.full.coordinator_input = clipDebugValue(coordinatorInput, debugCharLimit);
+    }
     const contents = [{
         role: 'user',
-        parts: [{ text: formatMessagesForCoordinator(messages) }],
+        parts: [{ text: coordinatorInput }],
     }];
 
     for (let round = 0; round <= maxToolRounds; round++) {
@@ -321,6 +338,9 @@ export async function runOmbreCoordinator({
         if (calls.length === 0) {
             const text = extractText(candidate.content);
             debug.relevant_info_chars = text.length;
+            if (debugFull) {
+                debug.full.coordinator_output = clipDebugValue(text, debugCharLimit);
+            }
             if (!text || text.trim() === NO_RELEVANT_INFO) return { relevantInfo: '', debug };
             return { relevantInfo: text, debug };
         }
@@ -336,12 +356,14 @@ export async function runOmbreCoordinator({
         for (const call of calls) {
             const originalName = nameMap.get(call.name) || call.name;
             const callDebug = { name: originalName, ok: false, result_chars: 0 };
+            if (debugFull) callDebug.args = clipDebugValue(call.args, debugCharLimit);
             try {
                 const result = await mcp.callTool(originalName, call.args);
                 const text = mcpContentToText(result.content);
                 callDebug.ok = !result.isError;
                 callDebug.result_chars = text.length;
                 callDebug.is_error = !!result.isError;
+                if (debugFull) callDebug.result_text = clipDebugValue(text, debugCharLimit);
                 responseParts.push(buildFunctionResponsePart(call, {
                     result: text,
                     is_error: !!result.isError,
