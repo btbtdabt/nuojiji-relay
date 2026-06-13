@@ -121,14 +121,13 @@ export class KvOutboxStore {
 
     async ack(inboxId, ids = []) {
         let n = 0;
-        const idSet = new Set(ids);
         for (const id of ids) {
             await this.kv.delete(`o:${inboxId}:${id}`);
             n++;
         }
-        const idx = await this._getIndex(inboxId);
-        const remaining = idx.filter((e) => !idSet.has(e.id));
-        await this._putIndex(inboxId, remaining);
+        // Do not rewrite idx here. KV has no compare-and-swap, so an ack racing
+        // with put() can clobber freshly indexed items. list() tolerates stale
+        // index entries by get()ing each item key and pruning best-effort.
         return n;
     }
 

@@ -71,6 +71,34 @@ async function testListKeepsIndexedItems() {
     assert.equal(listed[0].id, item.id);
 }
 
+async function testAckDoesNotRewriteIndex() {
+    const kv = new FakeKv();
+    const store = new KvOutboxStore(kv);
+    const inboxId = 'inbox';
+    const oldItem = {
+        id: 'relay_old',
+        requestId: 'round_old',
+        content: '{"t":"text","c":"old"}',
+        error: null,
+        createdAt: Date.now() - 1,
+    };
+    const newItem = {
+        id: 'relay_new',
+        requestId: 'round_new',
+        content: '{"t":"text","c":"new"}',
+        error: null,
+        createdAt: Date.now(),
+    };
+
+    await store.put(inboxId, oldItem);
+    await store.put(inboxId, newItem);
+    await store.ack(inboxId, [oldItem.id]);
+
+    const listed = await store.list(inboxId, 0);
+    assert.deepEqual(listed.map((item) => item.id), [newItem.id]);
+}
+
 await testListRepairsOrphanedItem();
 await testListKeepsIndexedItems();
+await testAckDoesNotRewriteIndex();
 console.log('kvOutboxStore tests passed');
