@@ -15,6 +15,15 @@ import { dispatchPush } from '../push/pushSender.js';
 import { nowMs, extractPushBodies } from '../util/ids.js';
 import { renderTimeTokens } from '../util/timeTokens.js';
 import { buildMemoryContext } from './mcpContext.js';
+import {
+    clipDebugValue,
+    debugError,
+    fullPromptDebugEnabled,
+    fullPromptDebugLimit,
+    logAgentEvent,
+    summarizeAiSettings,
+    summarizeMessages,
+} from '../agent/agentDebug.js';
 
 // 把滑窗消息渲染成转录文本（喂进 promptTemplate 的 {{RECENT_MESSAGES}}）
 function renderTranscript(recentMessages) {
@@ -48,6 +57,8 @@ export async function runProactiveTick(env) {
     const outbox = await createOutboxStore(env);
     const sub = await createSubStore(env);
     const now = nowMs();
+    const debugFull = fullPromptDebugEnabled(env);
+    const debugCharLimit = fullPromptDebugLimit(env);
 
     const pairs = await proactive.listEnabled();
     let fired = 0;
@@ -142,7 +153,44 @@ export async function runProactiveTick(env) {
                 { role: 'user', content: '请开始回复。' },
             ];
 
+            const requestId = `proactive_${rec.userId}_${rec.charId}_${now}`;
+            const attemptStartedAt = Date.now();
             let content = null, error = null;
+            const logAttempt = async (stage, extra = {}) => {
+                await logAgentEvent(env, {
+                    type: 'proactive_generation',
+                    ok: !error && stage === 'complete',
+                    stage,
+                    requestId,
+                    inboxId: rec.inboxId,
+                    userId: rec.userId,
+                    charId: rec.charId,
+                    mode: rec.mode || 'impulse',
+                    windowSize: Array.isArray(rec.recentMessages) ? rec.recentMessages.length : 0,
+                    aiSettings: summarizeAiSettings(rec.aiSettings),
+                    verdict: {
+                        fire: !!verdict.fire,
+                        score: verdict.score ?? null,
+                        threshold: verdict.threshold ?? null,
+                        reason: verdict.reason || '',
+                        factors: verdict.factors || {},
+                    },
+                    request: summarizeMessages(messages),
+                    memoryChars: memory.length,
+                    transcriptChars: transcript.length,
+                    responseChars: content ? String(content).length : 0,
+                    error: error ? debugError(new Error(error)) : null,
+                    durationMs: Date.now() - attemptStartedAt,
+                    ...extra,
+                    full: debugFull ? {
+                        messages: clipDebugValue(messages, debugCharLimit),
+                        systemContent: clipDebugValue(systemContent, debugCharLimit),
+                        transcript: clipDebugValue(transcript, debugCharLimit),
+                        memory: clipDebugValue(memory, debugCharLimit),
+                        response: clipDebugValue(content || '', debugCharLimit),
+                    } : undefined,
+                });
+            };
             try {
                 content = await runGeneration(rec.aiSettings, messages, rec.aiSettings?.maxTokens || null);
             } catch (e) {
@@ -151,20 +199,31 @@ export async function runProactiveTick(env) {
 
             const latest = await proactive.get?.(rec.inboxId, rec.userId, rec.charId);
             if (!latest || latest.enabled === false) {
+                await logAttempt('discarded_after_generation', { discardReason: 'pair_missing_or_disabled' });
                 await clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest);
                 continue;
             }
-            if (latest.generationClaimId !== generationClaimId) continue;
+            if (latest.generationClaimId !== generationClaimId) {
+                await logAttempt('discarded_after_generation', { discardReason: 'generation_claim_lost' });
+                continue;
+            }
             if ((Number(latest.lastInteractionAt) || 0) > now) {
+                await logAttempt('discarded_after_generation', {
+                    discardReason: 'user_replied_after_generation_started',
+                    latestLastInteractionAt: Number(latest.lastInteractionAt) || 0,
+                });
                 await clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest);
                 continue;
             }
             if ((Number(latest.lastFiredAt) || 0) > now) {
+                await logAttempt('discarded_after_generation', {
+                    discardReason: 'newer_fire_after_generation_started',
+                    latestLastFiredAt: Number(latest.lastFiredAt) || 0,
+                });
                 await clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest);
                 continue;
             }
 
-            const requestId = `proactive_${rec.userId}_${rec.charId}_${now}`;
             const item = {
                 id: `relay_${requestId}`, requestId,
                 charId: rec.charId, userId: rec.userId,
@@ -205,6 +264,7 @@ export async function runProactiveTick(env) {
                 //    下次 tick 会以为隔了很久（其实自己刚发过）→ 误触发频繁主动 / since 文本失真。
                 lastInteractionAt: now,
             });
+            await logAttempt('complete', { generated: !error, outbox: true });
 
             // 发推送叫醒——像微信那样【逐条气泡分开弹 + 带消息内容 + 角色名标题】，
             // 与 /generate 路径一致（extractPushBodies 把 AI 的 JSON-Lines 拆成每个气泡一条文本）。

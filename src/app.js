@@ -17,7 +17,15 @@ import { createSubStore, subKey } from './store/subStore.js';
 import { createProactiveStore, PROACTIVE_WINDOW_CAP } from './store/proactiveStore.js';
 import { runGeneration } from './ai/aiCaller.js';
 import { handleAgentChatCompletions, handleAgentDebug, handleAgentModels } from './agent/agentRelay.js';
-import { logAgentEvent, summarizeAiSettings } from './agent/agentDebug.js';
+import {
+    clipDebugValue,
+    debugError,
+    fullPromptDebugEnabled,
+    fullPromptDebugLimit,
+    logAgentEvent,
+    summarizeAiSettings,
+    summarizeMessages,
+} from './agent/agentDebug.js';
 import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
@@ -100,6 +108,9 @@ export function createApp() {
     app.get('/debug/agent', handleAgentDebug);
 
     app.post('/generate', async (c) => {
+        const startedAt = Date.now();
+        const debugFull = fullPromptDebugEnabled(c.env);
+        const debugCharLimit = fullPromptDebugLimit(c.env);
         let body;
         try { body = await c.req.json(); } catch { return c.json({ error: 'invalid json' }, 400); }
         const { requestId, inboxId, messages, settings, maxTokens, meta } = body || {};
@@ -136,6 +147,29 @@ export function createApp() {
             };
         }
         await outbox.put(inboxId, item);
+
+        await logAgentEvent(c.env, {
+            type: 'relay_generate',
+            ok: !item.error,
+            stage: 'complete',
+            requestId,
+            inboxId,
+            userId: item.userId,
+            charId: item.charId,
+            roundId: item.roundId,
+            generated: !item.error,
+            maxTokens: maxTokens ?? null,
+            request: summarizeMessages(messages),
+            aiSettings: summarizeAiSettings(settings),
+            responseChars: item.content ? String(item.content).length : 0,
+            error: item.error ? debugError(new Error(item.error)) : null,
+            durationMs: Date.now() - startedAt,
+            full: debugFull ? {
+                original_messages: clipDebugValue(messages, debugCharLimit),
+                response: clipDebugValue(item.content || '', debugCharLimit),
+                meta: clipDebugValue(meta || {}, debugCharLimit),
+            } : undefined,
+        });
 
         // 发推送（best-effort，丢了靠手机轮询补）。逐条发：把生成内容拆成各条可见消息，每条发一个带内容的通知，
         // 模拟真人逐条发消息的体验。拆分是通用 JSON-Lines 文本提取（取 {"t":"text","c":"..."} 的可见文本），
