@@ -37,6 +37,24 @@ function maxNumber(a, b) {
     return Math.max(aa, bb);
 }
 
+function normalizeForBehaviorCompare(value, key = '') {
+    if (value === undefined) return undefined;
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map((item) => normalizeForBehaviorCompare(item));
+
+    const out = {};
+    for (const childKey of Object.keys(value).sort()) {
+        if (key === '' && (childKey === 'updatedAt' || childKey === 'registerMeta')) continue;
+        const normalized = normalizeForBehaviorCompare(value[childKey], childKey);
+        if (normalized !== undefined) out[childKey] = normalized;
+    }
+    return out;
+}
+
+export function proactiveRecordsBehaviorallyEqual(a, b) {
+    return JSON.stringify(normalizeForBehaviorCompare(a || {})) === JSON.stringify(normalizeForBehaviorCompare(b || {}));
+}
+
 function mergeLifeState(prevLifeState, nextLifeState, { allowStreakDecrease = true } = {}) {
     const prev = (prevLifeState && typeof prevLifeState === 'object') ? prevLifeState : {};
     const next = (nextLifeState && typeof nextLifeState === 'object') ? nextLifeState : {};
@@ -99,7 +117,14 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
         merged.lastFiredAt = maxNumber(prev.lastFiredAt, next.lastFiredAt);
     }
 
-    merged.proactiveEnabledAt = next.proactiveEnabledAt || prev.proactiveEnabledAt || now;
+    const incomingEnabledAt = (typeof next.proactiveEnabledAt === 'number' && next.proactiveEnabledAt > 0)
+        ? next.proactiveEnabledAt : 0;
+    const reenabled = prev.enabled === false && next.enabled === true;
+    if (!prev.proactiveEnabledAt || reenabled) {
+        merged.proactiveEnabledAt = incomingEnabledAt || now;
+    } else {
+        merged.proactiveEnabledAt = prev.proactiveEnabledAt;
+    }
     merged.updatedAt = next.updatedAt || now;
     return merged;
 }
@@ -145,15 +170,21 @@ export class MemoryProactiveStore {
     }
     async upsert(rec) {
         const key = makePairKey(rec.inboxId, rec.userId, rec.charId);
+        const hadPrev = this.map.has(key);
         const prev = this.map.get(key) || {};
-        this.map.set(key, mergeProactiveRecord(prev, rec));
+        const merged = mergeProactiveRecord(prev, rec);
+        const changed = !hadPrev || !proactiveRecordsBehaviorallyEqual(prev, merged);
+        if (changed) this.map.set(key, merged);
+        return { changed, created: !hadPrev, record: changed ? merged : prev };
     }
     async patch(inboxId, userId, charId, patch) {
         const key = makePairKey(inboxId, userId, charId);
         const prev = this.map.get(key);
         if (!prev) return false;
-        this.map.set(key, mergeProactiveRecord(prev, patch));
-        return true;
+        const merged = mergeProactiveRecord(prev, patch);
+        const changed = !proactiveRecordsBehaviorallyEqual(prev, merged);
+        if (changed) this.map.set(key, merged);
+        return { changed, record: changed ? merged : prev };
     }
     async remove(inboxId, userId, charId) { this.map.delete(makePairKey(inboxId, userId, charId)); }
     async listEnabled() { return [...this.map.values()].filter(r => r.enabled); }
@@ -213,9 +244,12 @@ export class KvProactiveStore {
         const prevRaw = await this.kv.get(key);
         const prev = prevRaw ? JSON.parse(prevRaw) : {};
         const merged = mergeProactiveRecord(prev, rec);
+        const changed = !prevRaw || !proactiveRecordsBehaviorallyEqual(prev, merged);
+        if (!changed) return { changed: false, created: false, record: prev };
         await this.kv.put(key, JSON.stringify(merged));
         if (rec.lastFiredAt !== undefined) await this._putFireAt(pairKey, merged.lastFiredAt);
         await this._addToIdx(pairKey);
+        return { changed: true, created: !prevRaw, record: merged };
     }
     async patch(inboxId, userId, charId, patch) {
         const pairKey = makePairKey(inboxId, userId, charId);
@@ -224,9 +258,11 @@ export class KvProactiveStore {
         if (!prevRaw) return false;
         const prev = JSON.parse(prevRaw);
         const merged = mergeProactiveRecord(prev, patch);
+        const changed = !proactiveRecordsBehaviorallyEqual(prev, merged);
+        if (!changed) return { changed: false, record: prev };
         await this.kv.put(key, JSON.stringify(merged));
         if (patch.lastFiredAt !== undefined) await this._putFireAt(pairKey, merged.lastFiredAt);
-        return true;
+        return { changed: true, record: merged };
     }
     async remove(inboxId, userId, charId) {
         const pairKey = makePairKey(inboxId, userId, charId);

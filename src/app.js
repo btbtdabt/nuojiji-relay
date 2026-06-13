@@ -356,7 +356,7 @@ export function createApp() {
                 ? proactiveProfile.randomLifeChancePerDay : null,
         };
         const { proactive } = await getStores(c.env);
-        await proactive.upsert({
+        const upsertResult = await proactive.upsert({
             inboxId, userId: String(userId), charId: String(charId),
             mode: mode === 'interval' ? 'interval' : 'impulse',
             interval: interval ?? 60, intervalUnit: intervalUnit || 'minutes', probability: probability || 'medium',
@@ -374,20 +374,23 @@ export function createApp() {
             notifPrivacy: !!notifPrivacy, // 🔒 通知隐私模式：推送时正文换「你有一条新消息」，标题/头像保留
             registerMeta,
         });
-        await logAgentEvent(c.env, {
-            type: 'proactive_register',
-            ok: true,
-            inboxId,
-            userId: String(userId),
-            charId: String(charId),
-            enabled: enabled !== false,
-            mode: mode === 'interval' ? 'interval' : 'impulse',
-            windowSize: Array.isArray(recentMessages) ? recentMessages.length : 0,
-            aiSettings: summarizeAiSettings(aiSettings),
-            hasMcpContextServers: Array.isArray(mcpContextServers) && mcpContextServers.length > 0,
-            mcpContextServerCount: Array.isArray(mcpContextServers) ? mcpContextServers.length : 0,
-        });
-        return c.json({ ok: true });
+        const changed = upsertResult?.changed !== false;
+        if (changed) {
+            await logAgentEvent(c.env, {
+                type: 'proactive_register',
+                ok: true,
+                inboxId,
+                userId: String(userId),
+                charId: String(charId),
+                enabled: enabled !== false,
+                mode: mode === 'interval' ? 'interval' : 'impulse',
+                windowSize: Array.isArray(recentMessages) ? recentMessages.length : 0,
+                aiSettings: summarizeAiSettings(aiSettings),
+                hasMcpContextServers: Array.isArray(mcpContextServers) && mcpContextServers.length > 0,
+                mcpContextServerCount: Array.isArray(mcpContextServers) ? mcpContextServers.length : 0,
+            });
+        }
+        return c.json({ ok: true, changed });
     });
 
     // 🔒 即时刷新本 inbox 所有 pair 的通知隐私标志（用户切开关时调，无需重跑整个注册）。
