@@ -39,6 +39,15 @@ function maxNumber(a, b) {
     return Math.max(aa, bb);
 }
 
+function isUserMessage(message) {
+    return message?.sender === 'me' || message?.role === 'user';
+}
+
+function latestMessageIsUser(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return false;
+    return isUserMessage(messages[messages.length - 1]);
+}
+
 function normalizeForBehaviorCompare(value, key = '') {
     if (value === undefined) return undefined;
     if (value === null || typeof value !== 'object') return value;
@@ -128,6 +137,13 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
 
     if (next.lastFiredAt !== undefined || prev.lastFiredAt !== undefined) {
         merged.lastFiredAt = maxNumber(prev.lastFiredAt, next.lastFiredAt);
+    }
+
+    if (latestMessageIsUser(next.recentMessages)
+        && incomingInteractionAt > (Number(merged.lastFiredAt) || 0)) {
+        const lifeState = (merged.lifeState && typeof merged.lifeState === 'object') ? { ...merged.lifeState } : {};
+        lifeState.unansweredStreak = 0;
+        merged.lifeState = lifeState;
     }
 
     const incomingEnabledAt = (typeof next.proactiveEnabledAt === 'number' && next.proactiveEnabledAt > 0)

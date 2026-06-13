@@ -107,6 +107,32 @@ function testMergeAllowsStreakResetAfterUserReply() {
     assert.equal(merged.lifeState.unansweredStreak, 0);
 }
 
+function testMergeResetsStreakWhenUserReplyWindowOmitsReset() {
+    const merged = mergeProactiveRecord({
+        lastInteractionAt: 30_000,
+        lastFiredAt: 30_000,
+        recentMessages: [
+            { sender: 'me', text: 'before' },
+            { sender: 'char', text: 'server proactive' },
+        ],
+        lifeState: {
+            unansweredStreak: 1,
+            lastImpulseAt: 30_000,
+            lastProactiveSentAt: 30_000,
+        },
+    }, {
+        lastInteractionAt: 50_000,
+        recentMessages: [
+            { sender: 'me', text: 'before' },
+            { sender: 'char', text: 'server proactive' },
+            { sender: 'me', text: 'user replied' },
+        ],
+    }, 60_000);
+
+    assert.equal(merged.lastInteractionAt, 50_000);
+    assert.equal(merged.lifeState.unansweredStreak, 0);
+}
+
 function testMergeKeepsServerWindowUntilUserReply() {
     const prevWindow = [
         { sender: 'me', text: 'before' },
@@ -542,6 +568,7 @@ async function testKvNoopFirePatchRepairsRuntimeMirrors() {
 testMergeKeepsNewerServerTiming();
 testMergeAcceptsNewerClientTiming();
 testMergeAllowsStreakResetAfterUserReply();
+testMergeResetsStreakWhenUserReplyWindowOmitsReset();
 testMergeKeepsServerWindowUntilUserReply();
 testMergeInitializesNewRecordEnabledAt();
 await testPatchKeepsNewerServerTiming();
