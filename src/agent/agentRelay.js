@@ -44,8 +44,9 @@ export function buildMcpServerConfig(env) {
 
 export function buildCoordinatorConfig(env) {
     return {
-        apiKey: envValue(env, ['AGENT_COORDINATOR_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'], ''),
-        baseUrl: envValue(env, ['AGENT_COORDINATOR_BASE_URL'], 'https://generativelanguage.googleapis.com/v1beta'),
+        apiKey: envValue(env, ['AGENT_COORDINATOR_API_KEY', 'AGENT_GATEWAY_API_KEY', 'OMBRE_GATEWAY_TOKEN'], ''),
+        baseUrl: envValue(env, ['AGENT_COORDINATOR_BASE_URL', 'AGENT_GATEWAY_BASE_URL', 'OMBRE_GATEWAY_BASE_URL'], ''),
+        authType: envValue(env, ['AGENT_COORDINATOR_AUTH_TYPE'], 'bearer'),
         model: envValue(env, ['AGENT_COORDINATOR_MODEL'], 'gemini-3.5-flash'),
         timeoutMs: envNumber(env, ['AGENT_COORDINATOR_TIMEOUT_MS'], 180_000),
         maxToolRounds: Math.max(1, Math.min(32, envNumber(env, ['AGENT_MAX_TOOL_ROUNDS'], 8))),
@@ -161,7 +162,11 @@ export async function handleAgentChatCompletions(c) {
         }
     } else {
         coordinatorDebug = {
-            skipped: coordinatorConfig.apiKey ? 'missing mcp server url' : 'missing coordinator api key',
+            skipped: !coordinatorConfig.apiKey
+                ? 'missing coordinator api key'
+                : !coordinatorConfig.baseUrl
+                    ? 'missing coordinator base url'
+                    : 'missing mcp server url',
         };
     }
 

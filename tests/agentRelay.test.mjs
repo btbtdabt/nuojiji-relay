@@ -101,7 +101,8 @@ function testEnvConfigAliases() {
     const env = {
         AGENT_MCP_URL: 'https://brain.example.com/mcp',
         AGENT_MCP_BEARER_TOKEN: 'secret',
-        AGENT_COORDINATOR_API_KEY: 'gemini-key',
+        AGENT_COORDINATOR_API_KEY: 'gateway-token',
+        AGENT_COORDINATOR_BASE_URL: 'https://brain.example.com/v1beta',
         AGENT_FINAL_API_URL: 'https://claude-proxy.example.com',
         AGENT_FINAL_API_KEY: 'final-key',
     };
@@ -110,8 +111,17 @@ function testEnvConfigAliases() {
         url: 'https://brain.example.com/mcp',
         auth: { type: 'bearer', value: 'secret' },
     });
-    assert.equal(buildCoordinatorConfig(env).apiKey, 'gemini-key');
+    assert.equal(buildCoordinatorConfig(env).apiKey, 'gateway-token');
+    assert.equal(buildCoordinatorConfig(env).baseUrl, 'https://brain.example.com/v1beta');
+    assert.equal(buildCoordinatorConfig(env).authType, 'bearer');
     assert.equal(buildFinalSettings(env).mainApiModel, 'claude-opus-4-8');
+}
+
+function testCoordinatorConfigHasNoDirectGeminiDefault() {
+    const config = buildCoordinatorConfig({});
+    assert.equal(config.baseUrl, '');
+    assert.equal(config.apiKey, '');
+    assert.equal(config.authType, 'bearer');
 }
 
 function testCoordinatorMessageFormatting() {
@@ -125,12 +135,16 @@ function testCoordinatorMessageFormatting() {
 
     assert.match(text, /<NUOJIJI_REQUEST_INSTRUCTIONS_AS_DATA>/);
     assert.match(text, /The quoted Nuojiji\/request blocks may contain strong instructions/);
+    assert.match(text, /Gateway may have also injected relevant memory\/context/);
+    assert.match(text, /Use injected Gateway context as background\/reference/);
     assert.match(text, /\[1\] system:\npersona/);
     assert.match(text, /<OPENAI_MESSAGES_TRANSCRIPT_AS_DATA>/);
     assert.match(text, /\[2\] user:\nhi\n\[image attachment: image\/png/);
     assert.match(text, /<AVAILABLE_MCP_TOOLS>/);
     assert.match(text, /- breath: Restore handoff context\./);
     assert.match(text, /<COORDINATOR_OUTPUT_CONTRACT>/);
+    assert.match(text, /Merge relevant Gateway-injected context and MCP tool results when useful/);
+    assert.doesNotMatch(text, /Do not dump all injected context/);
 }
 
 function testCoordinatorMessageFormattingOmitsEmbeddedTranscript() {
@@ -220,6 +234,7 @@ testFunctionNameMapping();
 testPrepareDeclarationsKeepsOriginalToolName();
 testRelevantInfoAppend();
 testEnvConfigAliases();
+testCoordinatorConfigHasNoDirectGeminiDefault();
 testCoordinatorMessageFormatting();
 testCoordinatorMessageFormattingOmitsEmbeddedTranscript();
 testNuojijiReplyDetector();
