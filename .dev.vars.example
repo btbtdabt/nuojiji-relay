@@ -15,5 +15,5 @@ RELAY_SECRET=
 # AGENT_MCP_BEARER_TOKEN=
 # AGENT_FINAL_API_URL=https://claude-proxy.example.workers.dev
 # AGENT_FINAL_API_KEY=
-# AGENT_FINAL_MODEL=opus-4.8
+# AGENT_FINAL_MODEL=claude-opus-4-8
 # AGENT_FINAL_API_TYPE=openai

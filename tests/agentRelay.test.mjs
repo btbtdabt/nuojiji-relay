@@ -90,7 +90,7 @@ function testEnvConfigAliases() {
         auth: { type: 'bearer', value: 'secret' },
     });
     assert.equal(buildCoordinatorConfig(env).apiKey, 'gemini-key');
-    assert.equal(buildFinalSettings(env).mainApiModel, 'opus-4.8');
+    assert.equal(buildFinalSettings(env).mainApiModel, 'claude-opus-4-8');
 }
 
 function testCoordinatorMessageFormatting() {

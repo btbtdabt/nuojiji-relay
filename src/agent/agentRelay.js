@@ -47,7 +47,7 @@ export function buildFinalSettings(env, body = {}) {
     return {
         mainApiUrl: envValue(env, ['AGENT_FINAL_API_URL', 'AGENT_FINAL_BASE_URL', 'CLAUDE_PROXY_BASE_URL'], ''),
         mainApiKey: envValue(env, ['AGENT_FINAL_API_KEY', 'CLAUDE_PROXY_API_KEY'], ''),
-        mainApiModel: envValue(env, ['AGENT_FINAL_MODEL', 'CLAUDE_PROXY_MODEL'], 'opus-4.8'),
+        mainApiModel: envValue(env, ['AGENT_FINAL_MODEL', 'CLAUDE_PROXY_MODEL'], 'claude-opus-4-8'),
         apiType: envValue(env, ['AGENT_FINAL_API_TYPE'], 'openai'),
         temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
         reasoningEffort: body.reasoning_effort || body.reasoningEffort || undefined,
