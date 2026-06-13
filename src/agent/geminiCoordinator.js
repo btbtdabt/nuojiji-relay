@@ -290,13 +290,15 @@ export async function runOmbreCoordinator({
     maxToolRounds = DEFAULT_MAX_TOOL_ROUNDS,
     fetchImpl,
 }) {
-    if (!apiKey) return { relevantInfo: '', skipped: 'missing coordinator api key' };
-    if (!mcpServer?.url) return { relevantInfo: '', skipped: 'missing mcp server url' };
+    const debug = { skipped: '', tool_count: 0, rounds: 0, calls: [], errors: [] };
+    if (!apiKey) return { relevantInfo: '', skipped: 'missing coordinator api key', debug: { ...debug, skipped: 'missing coordinator api key' } };
+    if (!mcpServer?.url) return { relevantInfo: '', skipped: 'missing mcp server url', debug: { ...debug, skipped: 'missing mcp server url' } };
 
     const mcp = await createMcpSession(mcpServer, { timeoutMs });
     const tools = await mcp.listTools();
+    debug.tool_count = tools.length;
     const { functionDeclarations, nameMap } = prepareGeminiFunctionDeclarations(tools);
-    if (functionDeclarations.length === 0) return { relevantInfo: '', skipped: 'no mcp tools' };
+    if (functionDeclarations.length === 0) return { relevantInfo: '', skipped: 'no mcp tools', debug: { ...debug, skipped: 'no mcp tools' } };
 
     const contents = [{
         role: 'user',
@@ -304,6 +306,7 @@ export async function runOmbreCoordinator({
     }];
 
     for (let round = 0; round <= maxToolRounds; round++) {
+        debug.rounds = round + 1;
         const candidate = await callGeminiGenerateContent({
             apiKey,
             baseUrl,
@@ -317,8 +320,9 @@ export async function runOmbreCoordinator({
         const calls = extractFunctionCalls(candidate.content);
         if (calls.length === 0) {
             const text = extractText(candidate.content);
-            if (!text || text.trim() === NO_RELEVANT_INFO) return { relevantInfo: '' };
-            return { relevantInfo: text };
+            debug.relevant_info_chars = text.length;
+            if (!text || text.trim() === NO_RELEVANT_INFO) return { relevantInfo: '', debug };
+            return { relevantInfo: text, debug };
         }
 
         if (round === maxToolRounds) {
@@ -331,22 +335,30 @@ export async function runOmbreCoordinator({
         const responseParts = [];
         for (const call of calls) {
             const originalName = nameMap.get(call.name) || call.name;
+            const callDebug = { name: originalName, ok: false, result_chars: 0 };
             try {
                 const result = await mcp.callTool(originalName, call.args);
                 const text = mcpContentToText(result.content);
+                callDebug.ok = !result.isError;
+                callDebug.result_chars = text.length;
+                callDebug.is_error = !!result.isError;
                 responseParts.push(buildFunctionResponsePart(call, {
                     result: text,
                     is_error: !!result.isError,
                 }));
             } catch (error) {
+                callDebug.error = String(error?.message || error).slice(0, 300);
+                debug.errors.push(callDebug.error);
                 responseParts.push(buildFunctionResponsePart(call, {
                     error: String(error?.message || error),
                     is_error: true,
                 }));
+            } finally {
+                debug.calls.push(callDebug);
             }
         }
         contents.push(buildGeminiFunctionResponseContent(responseParts));
     }
 
-    return { relevantInfo: '' };
+    return { relevantInfo: '', debug };
 }

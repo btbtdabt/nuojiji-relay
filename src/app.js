@@ -16,7 +16,8 @@ import { createOutboxStore } from './store/outboxStore.js';
 import { createSubStore, subKey } from './store/subStore.js';
 import { createProactiveStore, PROACTIVE_WINDOW_CAP } from './store/proactiveStore.js';
 import { runGeneration } from './ai/aiCaller.js';
-import { handleAgentChatCompletions, handleAgentModels } from './agent/agentRelay.js';
+import { handleAgentChatCompletions, handleAgentDebug, handleAgentModels } from './agent/agentRelay.js';
+import { logAgentEvent, summarizeAiSettings } from './agent/agentDebug.js';
 import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
@@ -92,9 +93,11 @@ export function createApp() {
     app.use('/api/push/diag', requireSecret);
     app.use('/proactive/*', requireSecret);
     app.use('/v1/*', requireSecret);
+    app.use('/debug/*', requireSecret);
 
     app.get('/v1/models', handleAgentModels);
     app.post('/v1/chat/completions', handleAgentChatCompletions);
+    app.get('/debug/agent', handleAgentDebug);
 
     app.post('/generate', async (c) => {
         let body;
@@ -370,6 +373,19 @@ export function createApp() {
             avatarUrl: typeof avatarUrl === 'string' ? avatarUrl : null, // 🖼️ 角色头像公开 URL，推送时带给 iOS 通知扩展显示在左侧
             notifPrivacy: !!notifPrivacy, // 🔒 通知隐私模式：推送时正文换「你有一条新消息」，标题/头像保留
             registerMeta,
+        });
+        await logAgentEvent(c.env, {
+            type: 'proactive_register',
+            ok: true,
+            inboxId,
+            userId: String(userId),
+            charId: String(charId),
+            enabled: enabled !== false,
+            mode: mode === 'interval' ? 'interval' : 'impulse',
+            windowSize: Array.isArray(recentMessages) ? recentMessages.length : 0,
+            aiSettings: summarizeAiSettings(aiSettings),
+            hasMcpContextServers: Array.isArray(mcpContextServers) && mcpContextServers.length > 0,
+            mcpContextServerCount: Array.isArray(mcpContextServers) ? mcpContextServers.length : 0,
         });
         return c.json({ ok: true });
     });

@@ -13,6 +13,19 @@ import {
     prepareGeminiFunctionDeclarations,
     sanitizeGeminiSchema,
 } from '../src/agent/geminiCoordinator.js';
+import { listAgentEvents, logAgentEvent, summarizeAiSettings } from '../src/agent/agentDebug.js';
+
+class FakeKv {
+    constructor() {
+        this.map = new Map();
+    }
+    async get(key) {
+        return this.map.get(key) ?? null;
+    }
+    async put(key, value) {
+        this.map.set(key, value);
+    }
+}
 
 function testSchemaSanitizerRemovesUnsupportedFields() {
     const schema = sanitizeGeminiSchema({
@@ -118,6 +131,31 @@ function testGeminiFunctionResponseUsesUserRole() {
     });
 }
 
+async function testDebugEventStore() {
+    const env = { OUTBOX: new FakeKv() };
+    await logAgentEvent(env, { type: 'agent_chat', ok: true, final: { model: 'm' } });
+    const events = await listAgentEvents(env, { limit: 5 });
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, 'agent_chat');
+    assert.equal(events[0].ok, true);
+    assert.ok(events[0].id);
+}
+
+function testSummarizeAiSettingsMasksKeys() {
+    const summary = summarizeAiSettings({
+        mainApiUrl: 'https://relay.example/v1',
+        mainApiKey: 'secret',
+        mainApiModel: 'model',
+        secondaryApiKey: 'secret2',
+    });
+
+    assert.equal(summary.mainApiUrl, 'https://relay.example/v1');
+    assert.equal(summary.mainApiKey, undefined);
+    assert.equal(summary.hasMainApiKey, true);
+    assert.equal(summary.hasSecondaryApiKey, true);
+}
+
 testSchemaSanitizerRemovesUnsupportedFields();
 testFunctionNameMapping();
 testPrepareDeclarationsKeepsOriginalToolName();
@@ -125,4 +163,6 @@ testRelevantInfoAppend();
 testEnvConfigAliases();
 testCoordinatorMessageFormatting();
 testGeminiFunctionResponseUsesUserRole();
+await testDebugEventStore();
+testSummarizeAiSettingsMasksKeys();
 console.log('agentRelay tests passed');

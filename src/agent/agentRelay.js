@@ -1,6 +1,7 @@
 import { runGeneration } from '../ai/aiCaller.js';
 import { runOmbreCoordinator } from './geminiCoordinator.js';
 import { NO_RELEVANT_INFO } from './ombreCoordinatorPrompt.js';
+import { debugError, logAgentEvent, listAgentEvents, summarizeMessages } from './agentDebug.js';
 
 const RELEVANT_INFO_HEADER = '[Relevant info that could help as context]';
 
@@ -120,6 +121,7 @@ function streamCompletionPayload({ id, created, model, content }) {
 }
 
 export async function handleAgentChatCompletions(c) {
+    const startedAt = Date.now();
     let body;
     try { body = await c.req.json(); } catch { return c.json({ error: { message: 'invalid json' } }, 400); }
     if (!Array.isArray(body?.messages)) {
@@ -129,6 +131,8 @@ export async function handleAgentChatCompletions(c) {
     const coordinatorConfig = buildCoordinatorConfig(c.env);
     const mcpServer = buildMcpServerConfig(c.env);
     let relevantInfo = '';
+    let coordinatorDebug = { skipped: '' };
+    let coordinatorError = null;
 
     if (coordinatorConfig.apiKey && mcpServer?.url) {
         try {
@@ -138,13 +142,28 @@ export async function handleAgentChatCompletions(c) {
                 ...coordinatorConfig,
             });
             relevantInfo = result.relevantInfo || '';
+            coordinatorDebug = result.debug || coordinatorDebug;
         } catch (error) {
+            coordinatorError = error;
             console.warn('[agentRelay] coordinator failed:', error?.message || error);
         }
+    } else {
+        coordinatorDebug = {
+            skipped: coordinatorConfig.apiKey ? 'missing mcp server url' : 'missing coordinator api key',
+        };
     }
 
     const finalSettings = buildFinalSettings(c.env, body);
     if (!finalSettings.mainApiUrl || !finalSettings.mainApiKey) {
+        await logAgentEvent(c.env, {
+            type: 'agent_chat',
+            ok: false,
+            stage: 'config',
+            request: summarizeMessages(body.messages),
+            coordinator: coordinatorDebug,
+            error: { message: 'AGENT_FINAL_API_URL / AGENT_FINAL_API_KEY not configured on server' },
+            durationMs: Date.now() - startedAt,
+        });
         return c.json({
             error: {
                 message: 'AGENT_FINAL_API_URL / AGENT_FINAL_API_KEY not configured on server',
@@ -159,6 +178,22 @@ export async function handleAgentChatCompletions(c) {
     try {
         content = await runGeneration(finalSettings, finalMessages, maxTokens);
     } catch (error) {
+        await logAgentEvent(c.env, {
+            type: 'agent_chat',
+            ok: false,
+            stage: 'final',
+            request: summarizeMessages(body.messages),
+            coordinator: coordinatorDebug,
+            coordinator_error: debugError(coordinatorError),
+            final: {
+                model: finalSettings.mainApiModel,
+                apiType: finalSettings.apiType,
+                hasRelevantInfo: !!relevantInfo,
+                relevantInfoChars: relevantInfo.length,
+            },
+            error: debugError(error),
+            durationMs: Date.now() - startedAt,
+        });
         return c.json({
             error: {
                 message: String(error?.message || error),
@@ -170,6 +205,22 @@ export async function handleAgentChatCompletions(c) {
     const id = makeCompletionId();
     const created = Math.floor(Date.now() / 1000);
     const model = finalSettings.mainApiModel;
+    await logAgentEvent(c.env, {
+        type: 'agent_chat',
+        ok: true,
+        stage: 'complete',
+        request: summarizeMessages(body.messages),
+        coordinator: coordinatorDebug,
+        coordinator_error: debugError(coordinatorError),
+        final: {
+            model,
+            apiType: finalSettings.apiType,
+            hasRelevantInfo: !!relevantInfo,
+            relevantInfoChars: relevantInfo.length,
+            responseChars: String(content || '').length,
+        },
+        durationMs: Date.now() - startedAt,
+    });
     if (body.stream === true) {
         return streamCompletionPayload({ id, created, model, content });
     }
@@ -187,4 +238,10 @@ export function handleAgentModels(c) {
             owned_by: 'nuojiji-relay',
         }],
     });
+}
+
+export async function handleAgentDebug(c) {
+    const limit = c.req.query('limit') || 30;
+    const items = await listAgentEvents(c.env, { limit });
+    return c.json({ items, count: items.length });
 }
