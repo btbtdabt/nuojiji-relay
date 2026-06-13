@@ -203,14 +203,43 @@ function messageAlreadyEmbedded(message, instructionText) {
     return normalizeForContainment(instructionText).includes(normalizedContent);
 }
 
+function isCoordinatorPlaceholderUserText(text) {
+    const compact = String(text || '').replace(/\s+/g, '').trim().toLowerCase();
+    return compact === '请开始回复。'
+        || compact === '请开始回复'
+        || compact === 'pleasecontinue.'
+        || compact === 'pleasecontinue';
+}
+
 function latestUserMessageText(messages) {
     for (let index = (Array.isArray(messages) ? messages.length : 0) - 1; index >= 0; index--) {
         const message = messages[index];
         if (String(message?.role || '').toLowerCase() !== 'user') continue;
         const text = messageContentToText(message).trim();
-        if (text) return text;
+        if (text && !isCoordinatorPlaceholderUserText(text)) return text;
     }
     return '';
+}
+
+function transcriptQueryHintFromSystemMessages(messages) {
+    const systemText = (Array.isArray(messages) ? messages : [])
+        .filter((message) => {
+            const role = String(message?.role || '').toLowerCase();
+            return role === 'system' || role === 'developer';
+        })
+        .map((message) => messageContentToText(message))
+        .join('\n');
+    if (!systemText.trim()) return '';
+    const transcriptLines = systemText
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => /^(?:User|Char|Me|Assistant|用户|角色|助手)\s*[:：]/i.test(line))
+        .filter((line) => !isCoordinatorPlaceholderUserText(line.replace(/^[^:：]+[:：]\s*/, '')));
+    return transcriptLines.slice(-12).join('\n').slice(0, 4000).trim();
+}
+
+export function buildCoordinatorQueryHint(messages) {
+    return latestUserMessageText(messages) || transcriptQueryHintFromSystemMessages(messages);
 }
 
 function utf8Base64(text) {
@@ -437,7 +466,7 @@ export async function runOmbreCoordinator({
     if (functionDeclarations.length === 0) return { relevantInfo: '', skipped: 'no mcp tools', debug: { ...debug, skipped: 'no mcp tools' } };
 
     const coordinatorInput = formatMessagesForCoordinator(messages, tools);
-    const currentQuery = latestUserMessageText(messages);
+    const currentQuery = buildCoordinatorQueryHint(messages);
     if (debugFull) {
         debug.full.coordinator_input = clipDebugValue(coordinatorInput, debugCharLimit);
         debug.full.current_query = clipDebugValue(currentQuery, debugCharLimit);

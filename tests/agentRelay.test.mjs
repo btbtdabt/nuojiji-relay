@@ -8,6 +8,7 @@ import {
 } from '../src/agent/agentRelay.js';
 import {
     buildGeminiFunctionResponseContent,
+    buildCoordinatorQueryHint,
     buildFunctionResponsePart,
     formatMessagesForCoordinator,
     isLikelyNuojijiReply,
@@ -162,6 +163,34 @@ function testCoordinatorMessageFormattingOmitsEmbeddedTranscript() {
     assert.match(text, /1 non-system messages omitted/);
 }
 
+function testCoordinatorQueryHintIgnoresProactivePlaceholder() {
+    const hint = buildCoordinatorQueryHint([
+        {
+            role: 'system',
+            content: [
+                '[FRAME] proactive message',
+                'Recent:',
+                'User: before',
+                'Char: server proactive',
+                'Reason: score=0.8',
+            ].join('\n'),
+        },
+        { role: 'user', content: '请开始回复。' },
+    ]);
+
+    assert.equal(hint, 'User: before\nChar: server proactive');
+    assert.doesNotMatch(hint, /请开始回复/);
+}
+
+function testCoordinatorQueryHintPrefersRealUserText() {
+    const hint = buildCoordinatorQueryHint([
+        { role: 'system', content: 'Recent:\nUser: old line' },
+        { role: 'user', content: 'real current message' },
+    ]);
+
+    assert.equal(hint, 'real current message');
+}
+
 function testNuojijiReplyDetector() {
     assert.equal(isLikelyNuojijiReply([
         '<thinking>roleplay thoughts</thinking>',
@@ -293,6 +322,8 @@ testEnvConfigAliases();
 testCoordinatorConfigHasNoDirectGeminiDefault();
 testCoordinatorMessageFormatting();
 testCoordinatorMessageFormattingOmitsEmbeddedTranscript();
+testCoordinatorQueryHintIgnoresProactivePlaceholder();
+testCoordinatorQueryHintPrefersRealUserText();
 testNuojijiReplyDetector();
 testGeminiFunctionResponseUsesUserRole();
 await testAgentStreamUsesSeparateStopChunk();
