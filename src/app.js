@@ -16,6 +16,7 @@ import { createOutboxStore } from './store/outboxStore.js';
 import { createSubStore, subKey } from './store/subStore.js';
 import { createProactiveStore, PROACTIVE_WINDOW_CAP } from './store/proactiveStore.js';
 import { runGeneration } from './ai/aiCaller.js';
+import { handleAgentChatCompletions, handleAgentModels } from './agent/agentRelay.js';
 import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
@@ -90,6 +91,10 @@ export function createApp() {
     app.use('/api/push/unsubscribe', requireSecret);
     app.use('/api/push/diag', requireSecret);
     app.use('/proactive/*', requireSecret);
+    app.use('/v1/*', requireSecret);
+
+    app.get('/v1/models', handleAgentModels);
+    app.post('/v1/chat/completions', handleAgentChatCompletions);
 
     app.post('/generate', async (c) => {
         let body;

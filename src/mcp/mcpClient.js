@@ -1,12 +1,12 @@
 // 精简 MCP 客户端（Streamable HTTP transport, JSON-RPC 2.0）
 //
 // 镜像手机端 src/utils/mcpClient.js 的协议，但只实现后端代理主动消息需要的最小集：
-//   - initialize → notifications/initialized → tools/call
+//   - initialize → notifications/initialized → tools/list → tools/call
 //   - 响应支持 application/json（单一）或 text/event-stream（SSE 整段解析）
 //   - 不缓存 session（每次 callTool 完整握手；后端 tick 频率低，简单可靠优先）
 //   - 后端是服务器，无 CORS，直连 server.url（不走 Worker proxy）
 //
-// 只导出 callTool（context 检索用）。不需要 listTools。
+// callTool 保持旧行为：每次完整握手。Agent Relay 用 createMcpSession 复用同一会话。
 
 const PROTOCOL_VERSION = '2025-03-26';
 const CLIENT_INFO = { name: 'nuojiji-relay', version: '1.0.0' };
@@ -102,6 +102,36 @@ async function handshake(server, timeoutMs) {
         await sendRequest(server, { jsonrpc: '2.0', method: 'notifications/initialized' }, { sessionId, timeoutMs });
     } catch { /* 部分实现允许省略 */ }
     return { sessionId };
+}
+
+export async function createMcpSession(server, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+    if (!server?.url) throw new Error('MCP server url missing');
+    const { sessionId } = await handshake(server, timeoutMs);
+    let nextId = 3;
+
+    async function request(method, params) {
+        const id = nextId++;
+        const { result } = await sendRequest(server, {
+            jsonrpc: '2.0', id, method, ...(params ? { params } : {}),
+        }, { sessionId, timeoutMs });
+        return result;
+    }
+
+    return {
+        async listTools() {
+            const result = await request('tools/list');
+            return Array.isArray(result?.tools) ? result.tools : [];
+        },
+        async callTool(name, args = {}) {
+            const result = await request('tools/call', { name, arguments: args });
+            return { content: result?.content || [], isError: !!result?.isError };
+        },
+    };
+}
+
+export async function listTools(server, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+    const session = await createMcpSession(server, { timeoutMs });
+    return session.listTools();
 }
 
 // 把 MCP content 数组转纯文本（镜像手机端 mcpContentToText）

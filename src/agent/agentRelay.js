@@ -1,0 +1,190 @@
+import { runGeneration } from '../ai/aiCaller.js';
+import { runOmbreCoordinator } from './geminiCoordinator.js';
+import { NO_RELEVANT_INFO } from './ombreCoordinatorPrompt.js';
+
+const RELEVANT_INFO_HEADER = '[Relevant info that could help as context]';
+
+function envValue(env, keys, fallback = '') {
+    for (const key of keys) {
+        const value = env?.[key] ?? (typeof process !== 'undefined' ? process.env?.[key] : undefined);
+        if (value != null && String(value).trim() !== '') return String(value).trim();
+    }
+    return fallback;
+}
+
+function envNumber(env, keys, fallback) {
+    const raw = envValue(env, keys, '');
+    if (!raw) return fallback;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
+}
+
+export function buildMcpServerConfig(env) {
+    const url = envValue(env, ['AGENT_MCP_URL', 'OMBRE_MCP_URL'], '');
+    if (!url) return null;
+
+    const bearer = envValue(env, ['AGENT_MCP_BEARER_TOKEN', 'OMBRE_MCP_BEARER_TOKEN', 'OMBRE_MCP_TOKEN'], '');
+    if (bearer) return { url, auth: { type: 'bearer', value: bearer } };
+
+    const headerName = envValue(env, ['AGENT_MCP_HEADER_NAME', 'OMBRE_MCP_HEADER_NAME'], '');
+    const headerValue = envValue(env, ['AGENT_MCP_HEADER_VALUE', 'OMBRE_MCP_HEADER_VALUE'], '');
+    if (headerName && headerValue) return { url, auth: { type: 'header', headerName, value: headerValue } };
+
+    return { url, auth: { type: 'none' } };
+}
+
+export function buildCoordinatorConfig(env) {
+    return {
+        apiKey: envValue(env, ['AGENT_COORDINATOR_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'], ''),
+        baseUrl: envValue(env, ['AGENT_COORDINATOR_BASE_URL'], 'https://generativelanguage.googleapis.com/v1beta'),
+        model: envValue(env, ['AGENT_COORDINATOR_MODEL'], 'gemini-3.5-flash'),
+        timeoutMs: envNumber(env, ['AGENT_COORDINATOR_TIMEOUT_MS'], 180_000),
+        maxToolRounds: Math.max(1, Math.min(32, envNumber(env, ['AGENT_MAX_TOOL_ROUNDS'], 8))),
+    };
+}
+
+export function buildFinalSettings(env, body = {}) {
+    return {
+        mainApiUrl: envValue(env, ['AGENT_FINAL_API_URL', 'AGENT_FINAL_BASE_URL', 'CLAUDE_PROXY_BASE_URL'], ''),
+        mainApiKey: envValue(env, ['AGENT_FINAL_API_KEY', 'CLAUDE_PROXY_API_KEY'], ''),
+        mainApiModel: envValue(env, ['AGENT_FINAL_MODEL', 'CLAUDE_PROXY_MODEL'], 'opus-4.8'),
+        apiType: envValue(env, ['AGENT_FINAL_API_TYPE'], 'openai'),
+        temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+        reasoningEffort: body.reasoning_effort || body.reasoningEffort || undefined,
+        autoRetryEnabled: body.auto_retry_enabled !== false,
+        maxRetries: typeof body.max_retries === 'number' ? body.max_retries : 1,
+        secondaryFallbackEnabled: false,
+    };
+}
+
+export function appendRelevantInfoMessage(messages, relevantInfo) {
+    const text = String(relevantInfo || '').trim();
+    if (!text || text === NO_RELEVANT_INFO) return Array.isArray(messages) ? messages : [];
+    return [
+        ...(Array.isArray(messages) ? messages : []),
+        {
+            role: 'system',
+            content: `${RELEVANT_INFO_HEADER}\n${text}`,
+        },
+    ];
+}
+
+function makeCompletionId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return `chatcmpl_${crypto.randomUUID()}`;
+    }
+    return `chatcmpl_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+function buildCompletionPayload({ id, created, model, content }) {
+    return {
+        id,
+        object: 'chat.completion',
+        created,
+        model,
+        choices: [{
+            index: 0,
+            message: { role: 'assistant', content },
+            finish_reason: 'stop',
+        }],
+    };
+}
+
+function streamCompletionPayload({ id, created, model, content }) {
+    const chunks = [
+        {
+            id, object: 'chat.completion.chunk', created, model,
+            choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+        },
+        {
+            id, object: 'chat.completion.chunk', created, model,
+            choices: [{ index: 0, delta: { content }, finish_reason: 'stop' }],
+        },
+    ];
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream({
+        start(controller) {
+            for (const chunk of chunks) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+            }
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+        },
+    }), {
+        headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+        },
+    });
+}
+
+export async function handleAgentChatCompletions(c) {
+    let body;
+    try { body = await c.req.json(); } catch { return c.json({ error: { message: 'invalid json' } }, 400); }
+    if (!Array.isArray(body?.messages)) {
+        return c.json({ error: { message: 'messages array required' } }, 400);
+    }
+
+    const coordinatorConfig = buildCoordinatorConfig(c.env);
+    const mcpServer = buildMcpServerConfig(c.env);
+    let relevantInfo = '';
+
+    if (coordinatorConfig.apiKey && mcpServer?.url) {
+        try {
+            const result = await runOmbreCoordinator({
+                messages: body.messages,
+                mcpServer,
+                ...coordinatorConfig,
+            });
+            relevantInfo = result.relevantInfo || '';
+        } catch (error) {
+            console.warn('[agentRelay] coordinator failed:', error?.message || error);
+        }
+    }
+
+    const finalSettings = buildFinalSettings(c.env, body);
+    if (!finalSettings.mainApiUrl || !finalSettings.mainApiKey) {
+        return c.json({
+            error: {
+                message: 'AGENT_FINAL_API_URL / AGENT_FINAL_API_KEY not configured on server',
+                type: 'agent_relay_config_error',
+            },
+        }, 500);
+    }
+
+    const finalMessages = appendRelevantInfoMessage(body.messages, relevantInfo);
+    const maxTokens = body.max_tokens || body.max_completion_tokens || body.maxTokens || null;
+    let content;
+    try {
+        content = await runGeneration(finalSettings, finalMessages, maxTokens);
+    } catch (error) {
+        return c.json({
+            error: {
+                message: String(error?.message || error),
+                type: 'agent_final_error',
+            },
+        }, 502);
+    }
+
+    const id = makeCompletionId();
+    const created = Math.floor(Date.now() / 1000);
+    const model = finalSettings.mainApiModel;
+    if (body.stream === true) {
+        return streamCompletionPayload({ id, created, model, content });
+    }
+    return c.json(buildCompletionPayload({ id, created, model, content }));
+}
+
+export function handleAgentModels(c) {
+    const model = buildFinalSettings(c.env).mainApiModel;
+    return c.json({
+        object: 'list',
+        data: [{
+            id: model,
+            object: 'model',
+            created: 0,
+            owned_by: 'nuojiji-relay',
+        }],
+    });
+}

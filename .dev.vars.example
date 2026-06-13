@@ -6,3 +6,14 @@
 # 【必填】手机 App 与本后端的共享密钥。随便一个长随机串（如 32 位字符）。
 # 同一个值要填到 App 设置页的「中继密钥」里，两端一致才放行。
 RELAY_SECRET=
+
+# 可选：启用 /v1/chat/completions Agent Relay。
+# 这些通常在部署后到 Cloudflare Worker → Variables and Secrets 手动添加。
+# AGENT_COORDINATOR_API_KEY=
+# AGENT_COORDINATOR_MODEL=gemini-3.5-flash
+# AGENT_MCP_URL=https://brain.example.com/mcp
+# AGENT_MCP_BEARER_TOKEN=
+# AGENT_FINAL_API_URL=https://claude-proxy.example.workers.dev
+# AGENT_FINAL_API_KEY=
+# AGENT_FINAL_MODEL=opus-4.8
+# AGENT_FINAL_API_TYPE=openai
