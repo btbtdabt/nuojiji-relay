@@ -332,6 +332,21 @@ export function createApp() {
         if (!inboxId || userId == null || charId == null || !promptTemplate || !aiSettings) {
             return c.json({ error: 'inboxId / userId / charId / promptTemplate / aiSettings required' }, 400);
         }
+        const hasOwn = (key) => Object.prototype.hasOwnProperty.call(body || {}, key);
+        const registerMeta = {
+            receivedAt: nowMs(),
+            keys: Object.keys(body || {}).filter((key) => ![
+                'promptTemplate', 'aiSettings', 'recentMessages', 'mcpContextServers',
+            ].includes(key)).sort(),
+            hasIntensity: hasOwn('intensity'),
+            intensity: typeof intensity === 'string' ? intensity : null,
+            hasProactiveBias: hasOwn('proactiveBias'),
+            proactiveBias: typeof proactiveBias === 'number' ? proactiveBias : null,
+            hasProactiveProfile: hasOwn('proactiveProfile'),
+            profileThreshold: typeof proactiveProfile?.threshold === 'number' ? proactiveProfile.threshold : null,
+            profileRandomLifeChancePerDay: typeof proactiveProfile?.randomLifeChancePerDay === 'number'
+                ? proactiveProfile.randomLifeChancePerDay : null,
+        };
         const { proactive } = await getStores(c.env);
         await proactive.upsert({
             inboxId, userId: String(userId), charId: String(charId),
@@ -349,6 +364,7 @@ export function createApp() {
             mcpContextServers: Array.isArray(mcpContextServers) ? mcpContextServers : [], // 🧠 第三方记忆 MCP 直连配置
             avatarUrl: typeof avatarUrl === 'string' ? avatarUrl : null, // 🖼️ 角色头像公开 URL，推送时带给 iOS 通知扩展显示在左侧
             notifPrivacy: !!notifPrivacy, // 🔒 通知隐私模式：推送时正文换「你有一条新消息」，标题/头像保留
+            registerMeta,
         });
         return c.json({ ok: true });
     });
@@ -440,6 +456,7 @@ export function createApp() {
                 userId: r.userId, charId: r.charId, enabled: r.enabled,
                 windowSize: (r.recentMessages || []).length,
                 lastFiredAt: r.lastFiredAt || 0, updatedAt: r.updatedAt,
+                registerMeta: r.registerMeta || null,
             })),
         });
     });
