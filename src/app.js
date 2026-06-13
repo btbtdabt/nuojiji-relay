@@ -118,13 +118,23 @@ export function createApp() {
             return c.json({ error: 'requestId / inboxId / messages / settings required' }, 400);
         }
 
-        const { outbox, sub } = await getStores(c.env);
+        const { outbox, sub, proactive } = await getStores(c.env);
 
         // 幂等：同 requestId 在 TTL 内只处理一次
         if (await outbox.seenRequest(requestId)) {
             return c.json({ duplicate: true, requestId }, 409);
         }
         await outbox.markRequest(requestId);
+        if (meta?.userId != null && meta?.charId != null) {
+            try {
+                await proactive.patch(inboxId, String(meta.userId), String(meta.charId), {
+                    lastInteractionAt: startedAt,
+                    lifeState: { unansweredStreak: 0 },
+                });
+            } catch (e) {
+                console.warn('[generate] proactive state sync failed:', e?.message);
+            }
+        }
 
         // ⚠️ 在请求生命周期内「同步」跑完生成 + 写 outbox，再返回。
         //    早期用 c.executionCtx.waitUntil 在响应后跑后台任务，但 Cloudflare 免费版 Workers 对

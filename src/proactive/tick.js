@@ -25,6 +25,8 @@ import {
     summarizeMessages,
 } from '../agent/agentDebug.js';
 
+export const PROACTIVE_USER_REPLY_GRACE_MS = 60 * 1000;
+
 // 把滑窗消息渲染成转录文本（喂进 promptTemplate 的 {{RECENT_MESSAGES}}）
 function renderTranscript(recentMessages) {
     if (!Array.isArray(recentMessages) || recentMessages.length === 0) return '(no recent messages)';
@@ -81,6 +83,8 @@ export async function runProactiveTick(env) {
 
             const activeGenerationStartedAt = Number(rec.generationStartedAt) || 0;
             if (activeGenerationStartedAt && (now - activeGenerationStartedAt) < PROACTIVE_GENERATION_CLAIM_TTL_MS) continue;
+            const lastInteractionAt = Number(rec.lastInteractionAt) || 0;
+            if (lastInteractionAt && (now - lastInteractionAt) < PROACTIVE_USER_REPLY_GRACE_MS) continue;
 
             // 两种触发档：'impulse'(真人模式) / 'interval'(普通后台主动，计时+概率高中低)
             let verdict;

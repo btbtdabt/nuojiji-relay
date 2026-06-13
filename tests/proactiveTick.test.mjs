@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
-import { runProactiveTick } from '../src/proactive/tick.js';
+import { PROACTIVE_USER_REPLY_GRACE_MS, runProactiveTick } from '../src/proactive/tick.js';
 import {
     BACKEND_FIRE_COOLDOWN_MS,
     PROACTIVE_GENERATION_CLAIM_TTL_MS,
@@ -325,6 +325,157 @@ async function testIntervalModeCanFireBelowBackendImpulseCooldown() {
     }
 }
 
+async function testTickSkipsShortlyAfterUserInteraction() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    let now = 35_000_000;
+    const aiRequests = [];
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async (_url, init) => {
+        aiRequests.push(JSON.parse(String(init?.body || '{}')));
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'too soon' }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'interval',
+            interval: 1,
+            intervalUnit: 'minutes',
+            probability: 'high',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}',
+            lifeState: { unansweredStreak: 0 },
+            recentMessages: [{ sender: 'me', text: 'just replied' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 30_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assert.equal(aiRequests.length, 0);
+
+        now += PROACTIVE_USER_REPLY_GRACE_MS;
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assert.equal(aiRequests.length, 1);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testGenerateImmediatelyUpdatesProactiveInteractionState() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    const now = 36_000_000;
+    let fetchCalls = 0;
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async (_url, init) => {
+        fetchCalls++;
+        if (fetchCalls > 1) throw new Error('unexpected proactive AI request while user reply is fresh');
+        JSON.parse(String(init?.body || '{}'));
+
+        const storedDuringGenerate = parseStoredPair(kv);
+        assert.equal(storedDuringGenerate.lastInteractionAt, now);
+        assert.equal(storedDuringGenerate.lifeState.unansweredStreak, 0);
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'normal reply' }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'interval',
+            interval: 1,
+            intervalUnit: 'minutes',
+            probability: 'high',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}',
+            lifeState: { unansweredStreak: 2 },
+            recentMessages: [{ sender: 'char', text: 'old proactive' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            lastFiredAt: now - 30 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        const generateRes = await postJson(app, env, '/generate', {
+            requestId: 'req-user-reply',
+            inboxId: 'inbox',
+            messages: [{ role: 'user', content: 'I replied now' }],
+            settings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            meta: {
+                userId: 'user',
+                charId: 'char',
+                roundId: 'round',
+            },
+        });
+        assert.equal(generateRes.status, 202);
+        assert.equal(fetchCalls, 1);
+
+        const stored = parseStoredPair(kv);
+        assert.equal(stored.lastInteractionAt, now);
+        assert.equal(stored.lifeState.unansweredStreak, 0);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
 async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
     const app = createApp();
     const kv = new FakeKv();
@@ -395,5 +546,7 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testIntervalModeCanFireBelowBackendImpulseCooldown();
+await testTickSkipsShortlyAfterUserInteraction();
+await testGenerateImmediatelyUpdatesProactiveInteractionState();
 await testActiveGenerationClaimBlocksWithinConfiguredTtl();
 console.log('proactiveTick tests passed');
