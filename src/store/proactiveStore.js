@@ -101,12 +101,23 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     const prev = prevRecord || {};
     const next = omitUndefined(nextRecord);
     const merged = { ...prev, ...next };
+    const incomingInteractionAt = Number(next.lastInteractionAt) || 0;
+    const incomingFiredAt = Number(next.lastFiredAt) || 0;
+    const prevLastFiredAt = Number(prev.lastFiredAt) || 0;
 
     if (next.lifeState !== undefined) {
-        const incomingInteractionAt = Number(next.lastInteractionAt) || 0;
-        const prevLastFiredAt = Number(prev.lastFiredAt) || 0;
         const allowStreakDecrease = !prevLastFiredAt || incomingInteractionAt > prevLastFiredAt;
         merged.lifeState = mergeLifeState(prev.lifeState, next.lifeState, { allowStreakDecrease });
+    }
+
+    const isServerFireWindowPatch = incomingFiredAt > 0
+        && incomingInteractionAt >= incomingFiredAt
+        && incomingFiredAt >= prevLastFiredAt;
+    if (next.recentMessages !== undefined
+        && prevLastFiredAt
+        && incomingInteractionAt <= prevLastFiredAt
+        && !isServerFireWindowPatch) {
+        merged.recentMessages = prev.recentMessages;
     }
 
     if (next.lastInteractionAt !== undefined || prev.lastInteractionAt !== undefined) {
@@ -245,7 +256,10 @@ export class KvProactiveStore {
         const prev = prevRaw ? JSON.parse(prevRaw) : {};
         const merged = mergeProactiveRecord(prev, rec);
         const changed = !prevRaw || !proactiveRecordsBehaviorallyEqual(prev, merged);
-        if (!changed) return { changed: false, created: false, record: prev };
+        if (!changed) {
+            await this._addToIdx(pairKey);
+            return { changed: false, created: false, record: prev };
+        }
         await this.kv.put(key, JSON.stringify(merged));
         if (rec.lastFiredAt !== undefined) await this._putFireAt(pairKey, merged.lastFiredAt);
         await this._addToIdx(pairKey);

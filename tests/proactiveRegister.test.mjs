@@ -125,6 +125,29 @@ async function testMeaningfulRegisterChangeStillWrites() {
     assert.equal(stored.proactiveBias, -0.3);
 }
 
+async function testPrivacyNoopDoesNotOvercountUpdates() {
+    const kv = new FakeKv();
+    const app = createApp();
+
+    await postRegister(app, kv, registerPayload({ notifPrivacy: false }));
+    kv.putCalls = [];
+
+    const res = await app.fetch(new Request('https://relay.example/proactive/privacy', {
+        method: 'POST',
+        headers: {
+            authorization: 'Bearer test-secret',
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({ inboxId: 'inbox', notifPrivacy: false }),
+    }), env(kv));
+    const data = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(data, { ok: true, updated: 0 });
+    assert.equal(kv.putCalls.length, 0);
+}
+
 await testDuplicateRegisterDoesNotWriteKvOrDebug();
 await testMeaningfulRegisterChangeStillWrites();
+await testPrivacyNoopDoesNotOvercountUpdates();
 console.log('proactiveRegister tests passed');

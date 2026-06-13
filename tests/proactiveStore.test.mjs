@@ -97,6 +97,52 @@ function testMergeAllowsStreakResetAfterUserReply() {
     assert.equal(merged.lifeState.unansweredStreak, 0);
 }
 
+function testMergeKeepsServerWindowUntilUserReply() {
+    const prevWindow = [
+        { sender: 'me', text: 'before' },
+        { sender: 'char', text: 'server proactive' },
+    ];
+    const staleWindow = [{ sender: 'me', text: 'before' }];
+    const freshWindow = [...prevWindow, { sender: 'me', text: 'reply' }];
+
+    const stale = mergeProactiveRecord({
+        lastFiredAt: 30_000,
+        lastInteractionAt: 30_000,
+        recentMessages: prevWindow,
+        lifeState: { unansweredStreak: 1 },
+    }, {
+        lastInteractionAt: 20_000,
+        recentMessages: staleWindow,
+        lifeState: { unansweredStreak: 0 },
+    }, 40_000);
+
+    assert.deepEqual(stale.recentMessages, prevWindow);
+    assert.equal(stale.lifeState.unansweredStreak, 1);
+
+    const sameTimestampStale = mergeProactiveRecord({
+        lastFiredAt: 30_000,
+        lastInteractionAt: 30_000,
+        recentMessages: prevWindow,
+        lifeState: { unansweredStreak: 1 },
+    }, {
+        lastInteractionAt: 30_000,
+        recentMessages: staleWindow,
+        lifeState: { unansweredStreak: 0 },
+    }, 40_000);
+
+    assert.deepEqual(sameTimestampStale.recentMessages, prevWindow);
+    assert.equal(sameTimestampStale.lifeState.unansweredStreak, 1);
+
+    const fresh = mergeProactiveRecord(stale, {
+        lastInteractionAt: 50_000,
+        recentMessages: freshWindow,
+        lifeState: { unansweredStreak: 0 },
+    }, 60_000);
+
+    assert.deepEqual(fresh.recentMessages, freshWindow);
+    assert.equal(fresh.lifeState.unansweredStreak, 0);
+}
+
 function testMergeInitializesNewRecordEnabledAt() {
     const merged = mergeProactiveRecord({}, {
         inboxId: 'inbox',
@@ -138,6 +184,36 @@ async function testPatchKeepsNewerServerTiming() {
     assert.equal(rec.lastFiredAt, 30_000);
     assert.equal(rec.lifeState.lastImpulseAt, 30_000);
     assert.equal(rec.lifeState.lastProactiveSentAt, 30_000);
+    assert.equal(rec.lifeState.unansweredStreak, 1);
+}
+
+async function testPatchAcceptsServerWindowAtFireTimestamp() {
+    const store = new MemoryProactiveStore();
+    const oldWindow = [{ sender: 'me', text: 'before' }];
+    const serverWindow = [...oldWindow, { sender: 'char', text: 'server proactive' }];
+
+    await store.upsert({
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        lastInteractionAt: 10_000,
+        recentMessages: oldWindow,
+        lifeState: { unansweredStreak: 0 },
+    });
+
+    await store.patch('inbox', 'user', 'char', { lastFiredAt: 30_000 });
+    await store.patch('inbox', 'user', 'char', {
+        lastFiredAt: 30_000,
+        lastInteractionAt: 30_000,
+        recentMessages: serverWindow,
+        lifeState: { unansweredStreak: 1, lastImpulseAt: 30_000, lastProactiveSentAt: 30_000 },
+    });
+
+    const rec = await store.get('inbox', 'user', 'char');
+    assert.deepEqual(rec.recentMessages, serverWindow);
+    assert.equal(rec.lastInteractionAt, 30_000);
     assert.equal(rec.lifeState.unansweredStreak, 1);
 }
 
@@ -257,14 +333,44 @@ async function testKvFireAtMirrorIsMonotonic() {
     assert.equal(kv.putCalls.some((call) => call.key === 'pf:inbox:user:char'), false);
 }
 
+async function testKvDuplicateUpsertRepairsMissingIndex() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    kv.putCalls = [];
+
+    const result = await store.upsert(rec);
+    assert.equal(result.changed, false);
+    assert.equal(kv.putCalls.some((call) => call.key === 'p:inbox:user:char'), false);
+    assert.equal(kv.putCalls.some((call) => call.key === 'pidx'), true);
+
+    const rows = await store.listByInbox('inbox');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].charId, 'char');
+}
+
 testMergeKeepsNewerServerTiming();
 testMergeAcceptsNewerClientTiming();
 testMergeAllowsStreakResetAfterUserReply();
+testMergeKeepsServerWindowUntilUserReply();
 testMergeInitializesNewRecordEnabledAt();
 await testPatchKeepsNewerServerTiming();
+await testPatchAcceptsServerWindowAtFireTimestamp();
 await testKvListUsesFireAtMirror();
 await testKvFireMirrorRepairsRuntimeStateWhenUnanswered();
 await testKvFireMirrorKeepsUserReplyReset();
 await testKvFireMirrorCountsOneMissedFire();
 await testKvFireAtMirrorIsMonotonic();
+await testKvDuplicateUpsertRepairsMissingIndex();
 console.log('proactiveStore tests passed');

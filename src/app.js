@@ -403,7 +403,8 @@ export function createApp() {
         const recs = (proactive?.listByInbox ? await proactive.listByInbox(inboxId) : []) || [];
         let updated = 0;
         for (const r of recs) {
-            if (await proactive.patch(inboxId, String(r.userId), String(r.charId), { notifPrivacy: !!notifPrivacy })) updated++;
+            const result = await proactive.patch(inboxId, String(r.userId), String(r.charId), { notifPrivacy: !!notifPrivacy });
+            if (result && result.changed !== false) updated++;
         }
         return c.json({ ok: true, updated });
     });
