@@ -4,6 +4,7 @@ import { KvProactiveStore, MemoryProactiveStore, mergeProactiveRecord } from '..
 class FakeKv {
     constructor() {
         this.map = new Map();
+        this.putCalls = [];
     }
 
     async get(key) {
@@ -11,6 +12,7 @@ class FakeKv {
     }
 
     async put(key, value) {
+        this.putCalls.push({ key, value });
         this.map.set(key, value);
     }
 
@@ -171,9 +173,11 @@ async function testKvFireAtMirrorIsMonotonic() {
 
     await store.upsert(rec);
     await kv.put('pf:inbox:user:char', '30000');
+    kv.putCalls = [];
     await store.patch('inbox', 'user', 'char', { notifPrivacy: true });
 
     assert.equal(await kv.get('pf:inbox:user:char'), '30000');
+    assert.equal(kv.putCalls.some((call) => call.key === 'pf:inbox:user:char'), false);
 }
 
 testMergeKeepsNewerServerTiming();
