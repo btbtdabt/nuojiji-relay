@@ -18,43 +18,116 @@ const SUB_TTL_SEC = 60 * 60 * 24 * 60; // 60 天
 
 class KvSubStore {
     constructor(kv) { this.kv = kv; }
-    async add(inboxId, subscription) {
-        const key = `s:${inboxId}:${subKey(subscription)}`;
-        await this.kv.put(key, JSON.stringify(subscription), { expirationTtl: SUB_TTL_SEC });
+    async _getIdx(inboxId) {
+        const raw = await this.kv.get(`sidx:${inboxId}`);
+        if (!raw) return [];
+        try {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed.filter((key) => typeof key === 'string' && key) : [];
+        } catch {
+            return [];
+        }
     }
-    async list(inboxId) {
+    async _putIdx(inboxId, keys) {
+        await this.kv.put(`sidx:${inboxId}`, JSON.stringify([...new Set(keys)]), { expirationTtl: SUB_TTL_SEC });
+    }
+    async _addToIdx(inboxId, key) {
+        const idx = await this._getIdx(inboxId);
+        if (!idx.includes(key)) {
+            idx.push(key);
+            await this._putIdx(inboxId, idx);
+        }
+    }
+    async _removeFromIdx(inboxId, key) {
+        const idx = await this._getIdx(inboxId);
+        const next = idx.filter((item) => item !== key);
+        if (next.length !== idx.length) await this._putIdx(inboxId, next);
+    }
+    async _listEntriesByPrefix(inboxId) {
         const out = [];
         let cursor;
+        const prefix = `s:${inboxId}:`;
         do {
-            const res = await this.kv.list({ prefix: `s:${inboxId}:`, cursor });
-            for (const k of res.keys) {
+            const res = await this.kv.list({ prefix, cursor });
+            for (const k of res.keys || []) {
                 const raw = await this.kv.get(k.name);
-                if (raw) out.push(JSON.parse(raw));
+                if (!raw) continue;
+                try {
+                    out.push({ key: k.name.slice(prefix.length), value: JSON.parse(raw) });
+                } catch { /* skip corrupt */ }
             }
             cursor = res.list_complete ? null : res.cursor;
         } while (cursor);
         return out;
     }
+    async _listEntries(inboxId) {
+        const idx = await this._getIdx(inboxId);
+        const byKey = new Map();
+        const liveKeys = [];
+        let indexChanged = false;
+
+        for (const key of idx) {
+            const raw = await this.kv.get(`s:${inboxId}:${key}`);
+            if (!raw) {
+                indexChanged = true;
+                continue;
+            }
+            try {
+                byKey.set(key, JSON.parse(raw));
+                liveKeys.push(key);
+            } catch {
+                indexChanged = true;
+            }
+        }
+
+        // Migration/repair path for subscriptions written before sidx existed.
+        for (const entry of await this._listEntriesByPrefix(inboxId)) {
+            if (byKey.has(entry.key)) continue;
+            byKey.set(entry.key, entry.value);
+            liveKeys.push(entry.key);
+            indexChanged = true;
+        }
+
+        if (indexChanged) {
+            try { await this._putIdx(inboxId, liveKeys); } catch { /* best-effort repair */ }
+        }
+
+        return [...byKey.entries()].map(([key, value]) => ({ key, value }));
+    }
+    async add(inboxId, subscription) {
+        const key = subKey(subscription);
+        await this.kv.put(`s:${inboxId}:${key}`, JSON.stringify(subscription), { expirationTtl: SUB_TTL_SEC });
+        await this._addToIdx(inboxId, key);
+    }
+    async list(inboxId) {
+        return (await this._listEntries(inboxId)).map((entry) => entry.value);
+    }
     async remove(inboxId, subscription) {
-        await this.kv.delete(`s:${inboxId}:${subKey(subscription)}`);
+        const key = subKey(subscription);
+        await this.kv.delete(`s:${inboxId}:${key}`);
+        await this._removeFromIdx(inboxId, key);
     }
     // 清掉同 inbox 同 channel 下、key 不等于 keepKey 的旧订阅。
     // apns/fcm 是「每设备单 token」语义：token 轮换（重装/系统更新/恢复备份）会注册出新 key，
     // 旧 token 行在 60 天 TTL 内仍残留 → 每条推送/自检都发两遍。注册新 token 时顺手清旧的。
     async pruneChannel(inboxId, channel, keepKey) {
-        let cursor;
-        do {
-            const res = await this.kv.list({ prefix: `s:${inboxId}:`, cursor });
-            for (const k of res.keys) {
-                if (k.name === `s:${inboxId}:${keepKey}`) continue;
-                const raw = await this.kv.get(k.name);
-                if (!raw) continue;
-                let parsed; try { parsed = JSON.parse(raw); } catch { continue; }
-                const ch = parsed?.channel || parsed?.sub?.channel || 'web';
-                if (ch === channel) await this.kv.delete(k.name);
+        const entries = await this._listEntries(inboxId);
+        const nextKeys = [];
+        let deleted = false;
+        for (const { key, value } of entries) {
+            if (key === keepKey) {
+                nextKeys.push(key);
+                continue;
             }
-            cursor = res.list_complete ? null : res.cursor;
-        } while (cursor);
+            const ch = value?.channel || value?.sub?.channel || 'web';
+            if (ch === channel) {
+                await this.kv.delete(`s:${inboxId}:${key}`);
+                deleted = true;
+            } else {
+                nextKeys.push(key);
+            }
+        }
+        if (deleted) await this._putIdx(inboxId, nextKeys);
     }
 }
 
@@ -86,5 +159,5 @@ class MemorySubStore {
 // 订阅去重键：web 用 endpoint，apns/fcm 用 token
 export function subKey(subscription) {
     const s = subscription?.sub || subscription;
-    return s?.endpoint || subscription?.token || subscription?.channel || 'default';
+    return s?.endpoint || s?.token || subscription?.token || subscription?.channel || 'default';
 }
