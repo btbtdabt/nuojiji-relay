@@ -85,6 +85,10 @@ export async function runProactiveTick(env) {
 
             if (!verdict.fire) continue;
 
+            // 先落冷却，再做慢路径生成。Cloudflare scheduled events 可能重叠；
+            // 如果等 AI 返回后才写 lastFiredAt，下一轮 cron 会读到旧状态而重复发。
+            await proactive.patch(rec.inboxId, rec.userId, rec.charId, { lastFiredAt: now });
+
             // 命中 → 实时生成。messages 只有一条 system（手机端拼好的完整 prompt + 填充滑窗）
             const transcript = renderTranscript(rec.recentMessages);
             // 🧠 直连第三方记忆 MCP 检索（关软件也能用最新记忆）；失败/无配置 → 空串不阻断生成。

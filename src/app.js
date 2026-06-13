@@ -339,11 +339,11 @@ export function createApp() {
             interval: interval ?? 60, intervalUnit: intervalUnit || 'minutes', probability: probability || 'medium',
             promptTemplate, proactiveProfile: proactiveProfile || null, lifeState: lifeState || {},
             intensity: intensity || 'normal', proactiveBias: proactiveBias || 0,
-            recentMessages: Array.isArray(recentMessages) ? recentMessages.slice(-PROACTIVE_WINDOW_CAP) : [],
+            recentMessages: Array.isArray(recentMessages) ? recentMessages.slice(-PROACTIVE_WINDOW_CAP) : undefined,
             aiSettings, quietHours: quietHours || null,
             charUtcOffsetSeconds: charUtcOffsetSeconds ?? null,
-            proactiveEnabledAt: proactiveEnabledAt || Date.now(),
-            lastInteractionAt: lastInteractionAt || 0,
+            proactiveEnabledAt: (typeof proactiveEnabledAt === 'number' && proactiveEnabledAt > 0) ? proactiveEnabledAt : undefined,
+            lastInteractionAt: (typeof lastInteractionAt === 'number' && lastInteractionAt > 0) ? lastInteractionAt : undefined,
             enabled: enabled !== false,
             timeSpec: timeSpec || null, // 🕒 时间穿透：tick 时用它把 §NOW_*§ 哨兵填成即时真时间
             mcpContextServers: Array.isArray(mcpContextServers) ? mcpContextServers : [], // 🧠 第三方记忆 MCP 直连配置

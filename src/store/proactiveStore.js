@@ -26,6 +26,51 @@ export function makePairKey(inboxId, userId, charId) {
     return `${inboxId}:${String(userId)}:${String(charId)}`;
 }
 
+function omitUndefined(obj) {
+    return Object.fromEntries(Object.entries(obj || {}).filter(([, value]) => value !== undefined));
+}
+
+function maxNumber(a, b) {
+    const aa = Number(a) || 0;
+    const bb = Number(b) || 0;
+    return Math.max(aa, bb);
+}
+
+function mergeLifeState(prevLifeState, nextLifeState) {
+    const prev = (prevLifeState && typeof prevLifeState === 'object') ? prevLifeState : {};
+    const next = (nextLifeState && typeof nextLifeState === 'object') ? nextLifeState : {};
+    const merged = { ...prev, ...next };
+
+    for (const key of ['lastImpulseAt', 'lastProactiveSentAt', 'chitchatCooldownUntil']) {
+        const value = maxNumber(prev[key], next[key]);
+        if (value > 0) merged[key] = value;
+    }
+
+    return merged;
+}
+
+export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
+    const prev = prevRecord || {};
+    const next = omitUndefined(nextRecord);
+    const merged = { ...prev, ...next };
+
+    if (next.lifeState !== undefined) {
+        merged.lifeState = mergeLifeState(prev.lifeState, next.lifeState);
+    }
+
+    if (next.lastInteractionAt !== undefined || prev.lastInteractionAt !== undefined) {
+        merged.lastInteractionAt = maxNumber(prev.lastInteractionAt, next.lastInteractionAt);
+    }
+
+    if (next.lastFiredAt !== undefined || prev.lastFiredAt !== undefined) {
+        merged.lastFiredAt = maxNumber(prev.lastFiredAt, next.lastFiredAt);
+    }
+
+    merged.proactiveEnabledAt = next.proactiveEnabledAt || prev.proactiveEnabledAt || now;
+    merged.updatedAt = next.updatedAt || now;
+    return merged;
+}
+
 // Node 进程级单例：HTTP 路由和 cron tick 必须共享同一个内存/sqlite 实例，
 // 否则各拿各的新实例 → 注册的数据 tick 看不到。Workers 每次 fetch 新 env，KV 本就共享，不缓存。
 let _nodeSingleton = null;
@@ -68,7 +113,7 @@ export class MemoryProactiveStore {
     async upsert(rec) {
         const key = makePairKey(rec.inboxId, rec.userId, rec.charId);
         const prev = this.map.get(key) || {};
-        this.map.set(key, { ...prev, ...rec, updatedAt: rec.updatedAt || Date.now() });
+        this.map.set(key, mergeProactiveRecord(prev, rec));
     }
     async patch(inboxId, userId, charId, patch) {
         const key = makePairKey(inboxId, userId, charId);
@@ -123,7 +168,7 @@ class KvProactiveStore {
         const key = `p:${pairKey}`;
         const prevRaw = await this.kv.get(key);
         const prev = prevRaw ? JSON.parse(prevRaw) : {};
-        await this.kv.put(key, JSON.stringify({ ...prev, ...rec, updatedAt: rec.updatedAt || Date.now() }));
+        await this.kv.put(key, JSON.stringify(mergeProactiveRecord(prev, rec)));
         await this._addToIdx(pairKey);
     }
     async patch(inboxId, userId, charId, patch) {
