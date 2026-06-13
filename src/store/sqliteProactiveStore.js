@@ -1,7 +1,7 @@
 // 持久主动状态（Node，RELAY_STORE=sqlite）。整条 record 以 JSON 存一列，简单可靠。
 
 import { createRequire } from 'node:module';
-import { makePairKey } from './proactiveStore.js';
+import { makePairKey, mergeProactiveRecord } from './proactiveStore.js';
 
 // 计算式 require：阻止 esbuild/wrangler 把 better-sqlite3(Node-only)静态打进 Workers bundle。
 function loadSqlite() {
@@ -53,7 +53,7 @@ export class SqliteProactiveStore {
         const key = makePairKey(rec.inboxId, rec.userId, rec.charId);
         const prevRow = this.db.prepare('SELECT data FROM proactive WHERE pairKey = ?').get(key);
         const prev = prevRow ? JSON.parse(prevRow.data) : {};
-        const merged = { ...prev, ...rec, updatedAt: rec.updatedAt || Date.now() };
+        const merged = mergeProactiveRecord(prev, rec);
         this.db.prepare(
             'INSERT OR REPLACE INTO proactive (pairKey, inboxId, enabled, data, updatedAt) VALUES (?,?,?,?,?)'
         ).run(key, merged.inboxId, merged.enabled ? 1 : 0, JSON.stringify(merged), merged.updatedAt);
@@ -62,7 +62,7 @@ export class SqliteProactiveStore {
         const key = makePairKey(inboxId, userId, charId);
         const row = this.db.prepare('SELECT data FROM proactive WHERE pairKey = ?').get(key);
         if (!row) return false;
-        const merged = { ...JSON.parse(row.data), ...patch, updatedAt: Date.now() };
+        const merged = mergeProactiveRecord(JSON.parse(row.data), patch);
         this.db.prepare('UPDATE proactive SET enabled=?, data=?, updatedAt=? WHERE pairKey=?')
             .run(merged.enabled ? 1 : 0, JSON.stringify(merged), merged.updatedAt, key);
         return true;

@@ -21,6 +21,7 @@
 export const PROACTIVE_WINDOW_CAP = 30;
 // 后端 cron 触发后的最小静默（防 1 分钟 cron 连发；与手机端冷却独立）
 export const BACKEND_FIRE_COOLDOWN_MS = 20 * 60 * 1000;
+const PROACTIVE_RUNTIME_TTL_SEC = 7 * 24 * 60 * 60;
 
 export function makePairKey(inboxId, userId, charId) {
     return `${inboxId}:${String(userId)}:${String(charId)}`;
@@ -36,7 +37,7 @@ function maxNumber(a, b) {
     return Math.max(aa, bb);
 }
 
-function mergeLifeState(prevLifeState, nextLifeState) {
+function mergeLifeState(prevLifeState, nextLifeState, { allowStreakDecrease = true } = {}) {
     const prev = (prevLifeState && typeof prevLifeState === 'object') ? prevLifeState : {};
     const next = (nextLifeState && typeof nextLifeState === 'object') ? nextLifeState : {};
     const merged = { ...prev, ...next };
@@ -44,6 +45,12 @@ function mergeLifeState(prevLifeState, nextLifeState) {
     for (const key of ['lastImpulseAt', 'lastProactiveSentAt', 'chitchatCooldownUntil']) {
         const value = maxNumber(prev[key], next[key]);
         if (value > 0) merged[key] = value;
+    }
+
+    if (!allowStreakDecrease) {
+        const prevStreak = Number(prev.unansweredStreak) || 0;
+        const nextStreak = Number(next.unansweredStreak) || 0;
+        if (prevStreak > nextStreak) merged.unansweredStreak = prevStreak;
     }
 
     return merged;
@@ -55,7 +62,10 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     const merged = { ...prev, ...next };
 
     if (next.lifeState !== undefined) {
-        merged.lifeState = mergeLifeState(prev.lifeState, next.lifeState);
+        const incomingInteractionAt = Number(next.lastInteractionAt) || 0;
+        const prevLastFiredAt = Number(prev.lastFiredAt) || 0;
+        const allowStreakDecrease = !prevLastFiredAt || incomingInteractionAt > prevLastFiredAt;
+        merged.lifeState = mergeLifeState(prev.lifeState, next.lifeState, { allowStreakDecrease });
     }
 
     if (next.lastInteractionAt !== undefined || prev.lastInteractionAt !== undefined) {
@@ -119,7 +129,7 @@ export class MemoryProactiveStore {
         const key = makePairKey(inboxId, userId, charId);
         const prev = this.map.get(key);
         if (!prev) return false;
-        this.map.set(key, { ...prev, ...patch, updatedAt: Date.now() });
+        this.map.set(key, mergeProactiveRecord(prev, patch));
         return true;
     }
     async remove(inboxId, userId, charId) { this.map.delete(makePairKey(inboxId, userId, charId)); }
@@ -131,7 +141,7 @@ export class MemoryProactiveStore {
 // ===== Cloudflare KV 实现 =====
 // key 前缀 `p:`；listEnabled 扫全前缀（pair 数量有限，可接受）
 // ⚠️ 不用 kv.list(最终一致,刚注册的对 cron 可能扫不到)，改维护全局索引 key `pidx`(强一致 get)。
-class KvProactiveStore {
+export class KvProactiveStore {
     constructor(kv) { this.kv = kv; this.kind = 'kv'; }
     // inbox 级暂停（同 Memory 实现说明）。用 KV 原生 TTL 兜底，pausedUntil 也写进 value 双保险。
     async setPause(inboxId, pausedUntil) {
@@ -154,6 +164,17 @@ class KvProactiveStore {
         try { return JSON.parse(raw); } catch { return []; }
     }
     async _putIdx(keys) { await this.kv.put('pidx', JSON.stringify(keys)); }
+    async _getFireAt(pairKey) {
+        const raw = await this.kv.get(`pf:${pairKey}`);
+        return raw ? (Number(raw) || 0) : 0;
+    }
+    async _putFireAt(pairKey, firedAt) {
+        const ts = Number(firedAt) || 0;
+        if (ts <= 0) return;
+        const key = `pf:${pairKey}`;
+        const current = Number(await this.kv.get(key)) || 0;
+        await this.kv.put(key, String(Math.max(current, ts)), { expirationTtl: PROACTIVE_RUNTIME_TTL_SEC });
+    }
     async _addToIdx(pairKey) {
         const idx = await this._getIdx();
         if (!idx.includes(pairKey)) { idx.push(pairKey); await this._putIdx(idx); }
@@ -168,20 +189,26 @@ class KvProactiveStore {
         const key = `p:${pairKey}`;
         const prevRaw = await this.kv.get(key);
         const prev = prevRaw ? JSON.parse(prevRaw) : {};
-        await this.kv.put(key, JSON.stringify(mergeProactiveRecord(prev, rec)));
+        const merged = mergeProactiveRecord(prev, rec);
+        await this.kv.put(key, JSON.stringify(merged));
+        await this._putFireAt(pairKey, merged.lastFiredAt);
         await this._addToIdx(pairKey);
     }
     async patch(inboxId, userId, charId, patch) {
-        const key = `p:${makePairKey(inboxId, userId, charId)}`;
+        const pairKey = makePairKey(inboxId, userId, charId);
+        const key = `p:${pairKey}`;
         const prevRaw = await this.kv.get(key);
         if (!prevRaw) return false;
         const prev = JSON.parse(prevRaw);
-        await this.kv.put(key, JSON.stringify({ ...prev, ...patch, updatedAt: Date.now() }));
+        const merged = mergeProactiveRecord(prev, patch);
+        await this.kv.put(key, JSON.stringify(merged));
+        await this._putFireAt(pairKey, merged.lastFiredAt);
         return true;
     }
     async remove(inboxId, userId, charId) {
         const pairKey = makePairKey(inboxId, userId, charId);
         await this.kv.delete(`p:${pairKey}`);
+        await this.kv.delete(`pf:${pairKey}`);
         await this._removeFromIdx(pairKey);
     }
     async _all() {
@@ -189,7 +216,14 @@ class KvProactiveStore {
         const out = [];
         for (const pairKey of idx) {
             const raw = await this.kv.get(`p:${pairKey}`);
-            if (raw) { try { out.push(JSON.parse(raw)); } catch { /* skip */ } }
+            if (raw) {
+                try {
+                    const rec = JSON.parse(raw);
+                    const firedAt = await this._getFireAt(pairKey);
+                    if (firedAt > (Number(rec.lastFiredAt) || 0)) rec.lastFiredAt = firedAt;
+                    out.push(rec);
+                } catch { /* skip */ }
+            }
         }
         return out;
     }
