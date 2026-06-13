@@ -2,7 +2,7 @@ const DEBUG_INDEX_KEY = 'dbg:agent:index';
 const DEBUG_ITEM_PREFIX = 'dbg:agent:';
 const DEBUG_TTL_SEC = 48 * 60 * 60;
 const DEBUG_CAP = 120;
-const DEFAULT_FULL_DEBUG_CHARS = 30_000;
+const DEFAULT_FULL_DEBUG_CHARS = 200_000;
 
 let memoryEvents = [];
 

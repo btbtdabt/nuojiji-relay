@@ -380,7 +380,7 @@ export async function runOmbreCoordinator({
     timeoutMs = DEFAULT_TIMEOUT_MS,
     maxToolRounds = DEFAULT_MAX_TOOL_ROUNDS,
     debugFull = false,
-    debugCharLimit = 30_000,
+    debugCharLimit = 200_000,
     fetchImpl,
 }) {
     const debug = { skipped: '', tool_count: 0, rounds: 0, calls: [], errors: [] };
