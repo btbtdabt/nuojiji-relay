@@ -32,7 +32,8 @@ Writing memory:
 - Use trace to repair metadata, rename/re-domain, mark resolved, reactivate, pin, unpin, archive, or delete an existing bucket. Read the bucket first.
 - Use profile_fact for stable profile facts after there is evidence from a bucket or moment.
 - Use hold(..., whisper=true) for source-less inner notes or loose thoughts that should not attach to a specific source bucket.
-- Use darkroom_enter for active inner reflection that should not be shown to the user and should not enter ordinary memory.
+- Use darkroom_enter(mode="continue"|"single", visibility="active") for active inner reflection that should not be shown to the user and should not enter ordinary memory.
+- If darkroom_enter returns an argument error, retry with valid darkroom arguments instead of switching tools.
 - Use introspection after a substantial interaction or when the memory system needs a reflective cleanup pass.
 - Use pulse when the user asks what the memory system knows, asks for system status, or needs a high-level overview.
 
