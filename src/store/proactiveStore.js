@@ -48,6 +48,11 @@ function latestMessageIsUser(messages) {
     return isUserMessage(messages[messages.length - 1]);
 }
 
+function cloneRecord(record) {
+    if (!record || typeof record !== 'object') return {};
+    return JSON.parse(JSON.stringify(record));
+}
+
 function normalizeForBehaviorCompare(value, key = '') {
     if (value === undefined) return undefined;
     if (value === null || typeof value !== 'object') return value;
@@ -87,13 +92,26 @@ function mergeLifeState(prevLifeState, nextLifeState, { allowStreakDecrease = tr
 
 function applyFireMirror(rec, firedAt) {
     const ts = Number(firedAt) || 0;
-    if (ts <= 0 || ts <= (Number(rec.lastFiredAt) || 0)) return rec;
+    if (ts <= 0) return rec;
 
     const lifeState = (rec.lifeState && typeof rec.lifeState === 'object') ? { ...rec.lifeState } : {};
     const userRepliedAfterFire = (Number(rec.lastInteractionAt) || 0) > ts;
     const lastProactiveSentAt = Number(lifeState.lastProactiveSentAt) || 0;
+    const activeGenerationStartedAt = Number(rec.generationStartedAt) || 0;
+    const mirroredFireIsCurrentClaim = activeGenerationStartedAt > 0 && activeGenerationStartedAt <= ts;
+    const lastFiredAt = Number(rec.lastFiredAt) || 0;
 
-    rec.lastFiredAt = ts;
+    if (mirroredFireIsCurrentClaim) {
+        rec.generationStartedAt = 0;
+        rec.generationClaimId = null;
+    }
+
+    if (ts < lastFiredAt) {
+        rec.lifeState = lifeState;
+        return rec;
+    }
+
+    rec.lastFiredAt = Math.max(lastFiredAt, ts);
     lifeState.lastImpulseAt = Math.max(Number(lifeState.lastImpulseAt) || 0, ts);
     lifeState.lastProactiveSentAt = Math.max(lastProactiveSentAt, ts);
 
@@ -281,13 +299,18 @@ export class KvProactiveStore {
         } while (cursor);
         return out;
     }
+    async _applyFireMirror(pairKey, rec) {
+        const firedAt = await this._getFireAt(pairKey);
+        return applyFireMirror(rec, firedAt);
+    }
     async upsert(rec) {
         const pairKey = makePairKey(rec.inboxId, rec.userId, rec.charId);
         const key = `p:${pairKey}`;
         const prevRaw = await this.kv.get(key);
-        const prev = prevRaw ? JSON.parse(prevRaw) : {};
+        const rawPrev = prevRaw ? JSON.parse(prevRaw) : {};
+        const prev = prevRaw ? await this._applyFireMirror(pairKey, cloneRecord(rawPrev)) : {};
         const merged = mergeProactiveRecord(prev, rec);
-        const changed = !prevRaw || !proactiveRecordsBehaviorallyEqual(prev, merged);
+        const changed = !prevRaw || !proactiveRecordsBehaviorallyEqual(rawPrev, merged);
         if (!changed) {
             if (rec.lastFiredAt !== undefined) await this._putFireAt(pairKey, merged.lastFiredAt);
             await this._addToIdx(pairKey);
@@ -303,9 +326,10 @@ export class KvProactiveStore {
         const key = `p:${pairKey}`;
         const prevRaw = await this.kv.get(key);
         if (!prevRaw) return false;
-        const prev = JSON.parse(prevRaw);
+        const rawPrev = JSON.parse(prevRaw);
+        const prev = await this._applyFireMirror(pairKey, cloneRecord(rawPrev));
         const merged = mergeProactiveRecord(prev, patch);
-        const changed = !proactiveRecordsBehaviorallyEqual(prev, merged);
+        const changed = !proactiveRecordsBehaviorallyEqual(rawPrev, merged);
         if (!changed) {
             if (patch.lastFiredAt !== undefined) await this._putFireAt(pairKey, merged.lastFiredAt);
             await this._addToIdx(pairKey);

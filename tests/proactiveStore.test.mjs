@@ -369,6 +369,130 @@ async function testKvFireAtMirrorIsMonotonic() {
     assert.equal(kv.putCalls.some((call) => call.key === 'pf:inbox:user:char'), false);
 }
 
+async function testKvPatchRepairsStaleRuntimeStateFromFireMirror() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+        lastFiredAt: 10_000,
+        lastInteractionAt: 40_000,
+        generationStartedAt: 30_000,
+        generationClaimId: 'stale-claim',
+        lifeState: {
+            unansweredStreak: 0,
+            lastImpulseAt: 10_000,
+            lastProactiveSentAt: 10_000,
+        },
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    await kv.put('pf:inbox:user:char', '30000');
+    kv.putCalls = [];
+
+    const result = await store.patch('inbox', 'user', 'char', { notifPrivacy: true });
+    assert.equal(result.changed, true);
+
+    const stored = JSON.parse(await kv.get('p:inbox:user:char'));
+    assert.equal(stored.lastFiredAt, 30_000);
+    assert.equal(stored.lastInteractionAt, 40_000);
+    assert.equal(stored.generationStartedAt, 0);
+    assert.equal(stored.generationClaimId, null);
+    assert.equal(stored.lifeState.unansweredStreak, 0);
+    assert.equal(stored.lifeState.lastImpulseAt, 30_000);
+    assert.equal(stored.lifeState.lastProactiveSentAt, 30_000);
+    assert.equal(stored.notifPrivacy, true);
+    assert.equal(kv.putCalls.some((call) => call.key === 'p:inbox:user:char'), true);
+}
+
+async function testKvPatchRepairsRuntimeStateWhenFireAlreadyMirrored() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+        lastFiredAt: 30_000,
+        lastInteractionAt: 20_000,
+        generationStartedAt: 30_000,
+        generationClaimId: 'stale-claim',
+        lifeState: {
+            unansweredStreak: 0,
+            lastImpulseAt: 10_000,
+            lastProactiveSentAt: 10_000,
+        },
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    await kv.put('pf:inbox:user:char', '30000');
+    kv.putCalls = [];
+
+    const result = await store.patch('inbox', 'user', 'char', { notifPrivacy: true });
+    assert.equal(result.changed, true);
+
+    const stored = JSON.parse(await kv.get('p:inbox:user:char'));
+    assert.equal(stored.lastFiredAt, 30_000);
+    assert.equal(stored.lastInteractionAt, 30_000);
+    assert.equal(stored.generationStartedAt, 0);
+    assert.equal(stored.generationClaimId, null);
+    assert.equal(stored.lifeState.unansweredStreak, 1);
+    assert.equal(stored.lifeState.lastImpulseAt, 30_000);
+    assert.equal(stored.lifeState.lastProactiveSentAt, 30_000);
+    assert.equal(stored.notifPrivacy, true);
+}
+
+async function testKvNoopPatchRepairsStaleRuntimeStateFromFireMirror() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+        notifPrivacy: false,
+        lastFiredAt: 10_000,
+        lastInteractionAt: 40_000,
+        generationStartedAt: 30_000,
+        generationClaimId: 'stale-claim',
+        lifeState: {
+            unansweredStreak: 0,
+            lastImpulseAt: 10_000,
+            lastProactiveSentAt: 10_000,
+        },
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    await kv.put('pf:inbox:user:char', '30000');
+    kv.putCalls = [];
+
+    const result = await store.patch('inbox', 'user', 'char', { notifPrivacy: false });
+    assert.equal(result.changed, true);
+
+    const stored = JSON.parse(await kv.get('p:inbox:user:char'));
+    assert.equal(stored.notifPrivacy, false);
+    assert.equal(stored.lastFiredAt, 30_000);
+    assert.equal(stored.generationStartedAt, 0);
+    assert.equal(stored.generationClaimId, null);
+    assert.equal(stored.lifeState.lastImpulseAt, 30_000);
+    assert.equal(stored.lifeState.lastProactiveSentAt, 30_000);
+    assert.equal(kv.putCalls.some((call) => call.key === 'p:inbox:user:char'), true);
+}
+
 async function testKvDuplicateUpsertRepairsMissingIndex() {
     const kv = new FakeKv();
     const store = new KvProactiveStore(kv);
@@ -578,6 +702,9 @@ await testKvFireMirrorRepairsRuntimeStateWhenUnanswered();
 await testKvFireMirrorKeepsUserReplyReset();
 await testKvFireMirrorCountsOneMissedFire();
 await testKvFireAtMirrorIsMonotonic();
+await testKvPatchRepairsStaleRuntimeStateFromFireMirror();
+await testKvPatchRepairsRuntimeStateWhenFireAlreadyMirrored();
+await testKvNoopPatchRepairsStaleRuntimeStateFromFireMirror();
 await testKvDuplicateUpsertRepairsMissingIndex();
 await testKvListRepairsOrphanedProactivePair();
 await testKvListDoesNotRemoveIndexedPairOnTransientMiss();
