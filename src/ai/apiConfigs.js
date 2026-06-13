@@ -11,6 +11,19 @@ export const API_TYPES = {
 
 export const ANTHROPIC_API_VERSION = '2023-06-01';
 
+function joinTextParts(parts) {
+    if (!Array.isArray(parts)) return '';
+    return parts
+        .map((part) => {
+            if (typeof part === 'string') return part;
+            if (typeof part?.text === 'string') return part.text;
+            if (typeof part?.content === 'string') return part.content;
+            return '';
+        })
+        .filter(Boolean)
+        .join('');
+}
+
 // 各家「非流式」响应里怎么取正文。服务端永远 stream:false，只需 extractContent。
 export const API_CONFIGS = {
     [API_TYPES.OPENAI]: {
@@ -24,12 +37,14 @@ export const API_CONFIGS = {
         defaultModel: 'gemini-pro',
         extractContent: (data) => {
             if (data.choices?.[0]?.message?.content) return data.choices[0].message.content;
-            if (data.candidates?.[0]?.content?.parts?.[0]?.text) return data.candidates[0].content.parts[0].text;
+            const text = joinTextParts(data.candidates?.[0]?.content?.parts);
+            if (text) return text;
             return null;
         },
         extractStreamDelta: (data) => {
             if (data.choices?.[0]?.delta?.content) return data.choices[0].delta.content;
-            if (data.candidates?.[0]?.content?.parts?.[0]?.text) return data.candidates[0].content.parts[0].text;
+            const text = joinTextParts(data.candidates?.[0]?.content?.parts);
+            if (text) return text;
             return null;
         },
     },
@@ -38,12 +53,14 @@ export const API_CONFIGS = {
         defaultModel: 'claude-3-sonnet',
         extractContent: (data) => {
             if (data.choices?.[0]?.message?.content) return data.choices[0].message.content;
-            if (data.content?.[0]?.text) return data.content[0].text;
+            const text = joinTextParts(data.content);
+            if (text) return text;
             return null;
         },
         extractStreamDelta: (data) => {
             if (data.choices?.[0]?.delta?.content) return data.choices[0].delta.content;
             if (data.delta?.text) return data.delta.text;
+            if (data.delta?.type === 'text_delta' && data.delta?.text) return data.delta.text;
             return null;
         },
     },
@@ -52,7 +69,8 @@ export const API_CONFIGS = {
         defaultModel: 'custom-model',
         extractContent: (data) => {
             if (data.choices?.[0]?.message?.content) return data.choices[0].message.content;
-            if (data.content?.[0]?.text) return data.content[0].text;
+            const contentText = joinTextParts(data.content);
+            if (contentText) return contentText;
             if (data.text) return data.text;
             if (typeof data === 'string') return data;
             return null;

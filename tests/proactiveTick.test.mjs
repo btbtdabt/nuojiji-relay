@@ -163,5 +163,234 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
     }
 }
 
+async function testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    let now = 20_000_000;
+    const aiRequests = [];
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async (_url, init) => {
+        aiRequests.push(JSON.parse(String(init?.body || '{}')));
+        now += 1_000;
+        const syncRes = await postJson(app, env, '/proactive/sync-messages', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            lastInteractionAt: now,
+            recentMessages: [
+                { sender: 'me', text: 'before' },
+                { sender: 'me', text: 'user came back' },
+            ],
+            lifeState: { unansweredStreak: 0 },
+        });
+        assert.equal(syncRes.status, 200);
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'stale proactive' }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'impulse',
+            promptTemplate: [
+                'Recent:',
+                '{{RECENT_MESSAGES}}',
+                'Reason: {{IMPULSE_REASON}}',
+            ].join('\n'),
+            proactiveProfile: {
+                weights: { silence: 1, timeOfDay: 0, mood: 0, pendingQuestion: 0, randomLife: 0 },
+                silenceSaturationHours: 0.1,
+                quietHours: [0, 0],
+                threshold: 0.1,
+                randomLifeChancePerDay: 0,
+            },
+            lifeState: { unansweredStreak: 0 },
+            intensity: 'normal',
+            proactiveBias: 0,
+            recentMessages: [{ sender: 'me', text: 'before' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        const tick = await runProactiveTick(env);
+        assert.deepEqual(tick, { pairs: 1, fired: 0 });
+        assert.equal(aiRequests.length, 1);
+
+        const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
+        assert.equal(outbox.items.length, 0);
+
+        const stored = parseStoredPair(kv);
+        assert.deepEqual(stored.recentMessages, [
+            { sender: 'me', text: 'before' },
+            { sender: 'me', text: 'user came back' },
+        ]);
+        assert.equal(stored.lastInteractionAt, now);
+        assert.equal(stored.lastFiredAt || 0, 0);
+        assert.equal(stored.generationStartedAt || 0, 0);
+        assert.equal(stored.generationClaimId ?? null, null);
+        assert.equal(stored.lifeState.unansweredStreak, 0);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testIntervalModeCanFireBelowBackendImpulseCooldown() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    let now = 30_000_000;
+    const aiRequests = [];
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async (_url, init) => {
+        aiRequests.push(JSON.parse(String(init?.body || '{}')));
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: `interval ${aiRequests.length}` }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'interval',
+            interval: 1,
+            intervalUnit: 'minutes',
+            probability: 'high',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}',
+            lifeState: { unansweredStreak: 0 },
+            recentMessages: [{ sender: 'me', text: 'before' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        now += 61_000;
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assert.equal(aiRequests.length, 2);
+
+        const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
+        assert.equal(outbox.items.length, 2);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testActiveGenerationClaimCoversSlowRetryBudget() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    const now = 40_000_000;
+    const aiRequests = [];
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async (_url, init) => {
+        aiRequests.push(JSON.parse(String(init?.body || '{}')));
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'should not start' }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'interval',
+            interval: 1,
+            intervalUnit: 'minutes',
+            probability: 'high',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}',
+            lifeState: { unansweredStreak: 0 },
+            recentMessages: [{ sender: 'me', text: 'before' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: true,
+                maxRetries: 3,
+                secondaryFallbackEnabled: true,
+                secondaryApiUrl: 'https://api2.openai.example',
+                secondaryApiKey: 'test-key-2',
+                secondaryApiModel: 'test-model',
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        const stored = parseStoredPair(kv);
+        stored.generationStartedAt = now - (16 * 60_000 - 1);
+        stored.generationClaimId = 'still-running';
+        await kv.put('p:inbox:user:char', JSON.stringify(stored));
+
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assert.equal(aiRequests.length, 0);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
+await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
+await testIntervalModeCanFireBelowBackendImpulseCooldown();
+await testActiveGenerationClaimCoversSlowRetryBudget();
 console.log('proactiveTick tests passed');

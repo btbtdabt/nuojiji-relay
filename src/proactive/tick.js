@@ -1,7 +1,12 @@
 // Cron tick：遍历已启用的 pair，重算 impulse，命中则实时调 AI 生成主动消息 → outbox + 推送。
 // worker.js 的 scheduled 和 server.js 的 node-cron 都调 runProactiveTick(env)。
 
-import { createProactiveStore, BACKEND_FIRE_COOLDOWN_MS, PROACTIVE_WINDOW_CAP } from '../store/proactiveStore.js';
+import {
+    createProactiveStore,
+    BACKEND_FIRE_COOLDOWN_MS,
+    PROACTIVE_GENERATION_CLAIM_TTL_MS,
+    PROACTIVE_WINDOW_CAP,
+} from '../store/proactiveStore.js';
 import { createOutboxStore } from '../store/outboxStore.js';
 import { createSubStore } from '../store/subStore.js';
 import { shouldFire, shouldFireInterval } from './impulseEngine.js';
@@ -29,6 +34,15 @@ function fillTemplate(template, { transcript, reason, memory }) {
         .replaceAll('{{MEMORY_CONTEXT}}', memory || '');
 }
 
+async function clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest = null) {
+    const current = latest || await proactive.get?.(rec.inboxId, rec.userId, rec.charId);
+    if (!current || current.generationClaimId !== generationClaimId) return;
+    await proactive.patch(rec.inboxId, rec.userId, rec.charId, {
+        generationStartedAt: 0,
+        generationClaimId: null,
+    });
+}
+
 export async function runProactiveTick(env) {
     const proactive = await createProactiveStore(env);
     const outbox = await createOutboxStore(env);
@@ -54,8 +68,8 @@ export async function runProactiveTick(env) {
             // 走线下剧情中：跳过该 inbox 的所有主动生成（用户在前台沉浸剧情，不该被线上消息打断）
             if (await isInboxPaused(rec.inboxId)) continue;
 
-            // 后端冷却：上次触发太近就跳过（防 1 分钟 cron 连发）
-            if (rec.lastFiredAt && (now - rec.lastFiredAt) < BACKEND_FIRE_COOLDOWN_MS) continue;
+            const activeGenerationStartedAt = Number(rec.generationStartedAt) || 0;
+            if (activeGenerationStartedAt && (now - activeGenerationStartedAt) < PROACTIVE_GENERATION_CLAIM_TTL_MS) continue;
 
             // 两种触发档：'impulse'(真人模式) / 'interval'(普通后台主动，计时+概率高中低)
             let verdict;
@@ -65,6 +79,9 @@ export async function runProactiveTick(env) {
                     interval: rec.interval, intervalUnit: rec.intervalUnit, probability: rec.probability,
                 });
             } else {
+                // 后端冷却：impulse 档上次触发太近就跳过（防 1 分钟 cron 连发）。
+                // interval 档由 shouldFireInterval 按用户配置的 interval 自己控制。
+                if (rec.lastFiredAt && (now - rec.lastFiredAt) < BACKEND_FIRE_COOLDOWN_MS) continue;
                 verdict = shouldFire({
                     profile: rec.proactiveProfile,
                     lifeState: rec.lifeState,
@@ -85,9 +102,20 @@ export async function runProactiveTick(env) {
 
             if (!verdict.fire) continue;
 
-            // 先落冷却，再做慢路径生成。Cloudflare scheduled events 可能重叠；
-            // 如果等 AI 返回后才写 lastFiredAt，下一轮 cron 会读到旧状态而重复发。
-            await proactive.patch(rec.inboxId, rec.userId, rec.charId, { lastFiredAt: now });
+            // 先落「生成中」claim，再做慢路径生成。lastFiredAt 只在真正入 outbox 后写入，
+            // 否则用户中途回复导致丢弃时，会被误当作已经发过一条主动消息。
+            const generationClaimId = `gen_${rec.userId}_${rec.charId}_${now}_${Math.random().toString(36).slice(2)}`;
+            const claim = await proactive.patch(rec.inboxId, rec.userId, rec.charId, {
+                generationStartedAt: now,
+                generationClaimId,
+            });
+            if (!claim || claim.changed === false) continue;
+            const claimed = await proactive.get?.(rec.inboxId, rec.userId, rec.charId);
+            if (!claimed || claimed.generationClaimId !== generationClaimId) continue;
+            if ((Number(claimed.lastInteractionAt) || 0) > now || (Number(claimed.lastFiredAt) || 0) > now) {
+                await clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, claimed);
+                continue;
+            }
 
             // 命中 → 实时生成。messages 只有一条 system（手机端拼好的完整 prompt + 填充滑窗）
             const transcript = renderTranscript(rec.recentMessages);
@@ -119,6 +147,21 @@ export async function runProactiveTick(env) {
                 content = await runGeneration(rec.aiSettings, messages, rec.aiSettings?.maxTokens || null);
             } catch (e) {
                 error = String(e?.message || e);
+            }
+
+            const latest = await proactive.get?.(rec.inboxId, rec.userId, rec.charId);
+            if (!latest || latest.enabled === false) {
+                await clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest);
+                continue;
+            }
+            if (latest.generationClaimId !== generationClaimId) continue;
+            if ((Number(latest.lastInteractionAt) || 0) > now) {
+                await clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest);
+                continue;
+            }
+            if ((Number(latest.lastFiredAt) || 0) > now) {
+                await clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest);
+                continue;
             }
 
             const requestId = `proactive_${rec.userId}_${rec.charId}_${now}`;
@@ -154,6 +197,8 @@ export async function runProactiveTick(env) {
             const nextStreak = (rec.mode === 'interval' || error) ? prevStreak : prevStreak + 1;
             await proactive.patch(rec.inboxId, rec.userId, rec.charId, {
                 lastFiredAt: now,
+                generationStartedAt: 0,
+                generationClaimId: null,
                 lifeState: { ...ls, lastImpulseAt: now, lastProactiveSentAt: now, unansweredStreak: nextStreak },
                 recentMessages: nextWindow,
                 // 🕒 自己刚发完 → lastInteractionAt 也推进到现在，否则「距上次多久」一直从旧时间算，

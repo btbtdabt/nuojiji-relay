@@ -58,6 +58,16 @@ async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature,
         const decoder = new TextDecoder();
         let buffer = '';
         let content = '';
+        const processLine = (line) => {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data:')) return;
+            const payload = trimmed.slice(5).trim();
+            if (payload === '[DONE]') return;
+            let json;
+            try { json = JSON.parse(payload); } catch { return; }
+            const delta = config.extractStreamDelta(json);
+            if (delta) content += delta;
+        };
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -65,16 +75,10 @@ async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature,
             const lines = buffer.split('\n');
             buffer = lines.pop() || ''; // 末行可能不完整，留到下次
             for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed || !trimmed.startsWith('data:')) continue;
-                const payload = trimmed.slice(5).trim();
-                if (payload === '[DONE]') continue;
-                let json;
-                try { json = JSON.parse(payload); } catch { continue; }
-                const delta = config.extractStreamDelta(json);
-                if (delta) content += delta;
+                processLine(line);
             }
         }
+        if (buffer.trim()) processLine(buffer);
         if (!content || !content.trim()) {
             const err = new Error('AI returned empty content (stream)');
             err.status = res.status;

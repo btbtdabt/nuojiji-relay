@@ -21,6 +21,8 @@
 export const PROACTIVE_WINDOW_CAP = 30;
 // 后端 cron 触发后的最小静默（防 1 分钟 cron 连发；与手机端冷却独立）
 export const BACKEND_FIRE_COOLDOWN_MS = 20 * 60 * 1000;
+// 单次生成可能经历主 API 多次 180s 超时 + fallback；claim 必须覆盖这段慢路径，避免中途重入重复生成。
+export const PROACTIVE_GENERATION_CLAIM_TTL_MS = 30 * 60 * 1000;
 const PROACTIVE_RUNTIME_TTL_SEC = 7 * 24 * 60 * 60;
 
 export function makePairKey(inboxId, userId, charId) {
@@ -249,6 +251,20 @@ export class KvProactiveStore {
         const next = idx.filter((k) => k !== pairKey);
         if (next.length !== idx.length) await this._putIdx(next);
     }
+    async _listPairKeysByPrefix() {
+        if (!this.kv || typeof this.kv.list !== 'function') return [];
+        const out = [];
+        let cursor;
+        do {
+            const res = await this.kv.list({ prefix: 'p:', cursor });
+            for (const key of res.keys || []) {
+                const name = String(key.name || '');
+                if (name.startsWith('p:')) out.push(name.slice(2));
+            }
+            cursor = res.list_complete ? null : res.cursor;
+        } while (cursor);
+        return out;
+    }
     async upsert(rec) {
         const pairKey = makePairKey(rec.inboxId, rec.userId, rec.charId);
         const key = `p:${pairKey}`;
@@ -292,8 +308,15 @@ export class KvProactiveStore {
     }
     async _all() {
         const idx = await this._getIdx();
+        const pairKeys = [...idx];
+        let indexChanged = false;
+        for (const pairKey of await this._listPairKeysByPrefix()) {
+            if (pairKeys.includes(pairKey)) continue;
+            pairKeys.push(pairKey);
+            indexChanged = true;
+        }
         const out = [];
-        for (const pairKey of idx) {
+        for (const pairKey of pairKeys) {
             const raw = await this.kv.get(`p:${pairKey}`);
             if (raw) {
                 try {
@@ -303,12 +326,19 @@ export class KvProactiveStore {
                 } catch { /* skip */ }
             }
         }
+        if (indexChanged) {
+            try { await this._putIdx(pairKeys); } catch { /* best-effort repair */ }
+        }
         return out;
     }
     async listEnabled() { return (await this._all()).filter(r => r.enabled); }
     async listByInbox(inboxId) { return (await this._all()).filter(r => r.inboxId === inboxId); }
     async get(inboxId, userId, charId) {
-        const raw = await this.kv.get(`p:${makePairKey(inboxId, userId, charId)}`);
-        return raw ? JSON.parse(raw) : null;
+        const pairKey = makePairKey(inboxId, userId, charId);
+        const raw = await this.kv.get(`p:${pairKey}`);
+        if (!raw) return null;
+        const rec = JSON.parse(raw);
+        const firedAt = await this._getFireAt(pairKey);
+        return applyFireMirror(rec, firedAt);
     }
 }

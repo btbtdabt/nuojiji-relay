@@ -19,6 +19,16 @@ class FakeKv {
     async delete(key) {
         this.map.delete(key);
     }
+
+    async list({ prefix = '' } = {}) {
+        return {
+            keys: [...this.map.keys()]
+                .filter((name) => name.startsWith(prefix))
+                .sort()
+                .map((name) => ({ name })),
+            list_complete: true,
+        };
+    }
 }
 
 function testMergeKeepsNewerServerTiming() {
@@ -360,6 +370,94 @@ async function testKvDuplicateUpsertRepairsMissingIndex() {
     assert.equal(rows[0].charId, 'char');
 }
 
+async function testKvListRepairsOrphanedProactivePair() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    kv.putCalls = [];
+
+    const rows = await store.listByInbox('inbox');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].charId, 'char');
+    assert.equal(kv.putCalls.some((call) => call.key === 'pidx'), true);
+    assert.deepEqual(JSON.parse(await kv.get('pidx')), ['inbox:user:char']);
+}
+
+async function testKvListDoesNotRemoveIndexedPairOnTransientMiss() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+    };
+
+    await kv.put('pidx', JSON.stringify(['inbox:user:char']));
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+
+    const originalGet = kv.get.bind(kv);
+    let missed = false;
+    kv.get = async (key) => {
+        if (key === 'p:inbox:user:char' && !missed) {
+            missed = true;
+            return null;
+        }
+        return originalGet(key);
+    };
+    kv.putCalls = [];
+
+    const rows = await store.listByInbox('inbox');
+    assert.equal(rows.length, 0);
+    assert.deepEqual(JSON.parse(await kv.get('pidx')), ['inbox:user:char']);
+    assert.equal(kv.putCalls.some((call) => call.key === 'pidx'), false);
+
+    const recovered = await store.listByInbox('inbox');
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0].charId, 'char');
+}
+
+async function testKvGetAppliesFireMirror() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+        lastFiredAt: 5_000,
+        lastInteractionAt: 0,
+        lifeState: { unansweredStreak: 0 },
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    await kv.put('pf:inbox:user:char', '30000');
+
+    const stored = await store.get('inbox', 'user', 'char');
+    assert.equal(stored.lastFiredAt, 30_000);
+    assert.equal(stored.lastInteractionAt, 30_000);
+    assert.equal(stored.lifeState.unansweredStreak, 1);
+}
+
 async function testKvPatchRepairsMissingIndexWhenChanged() {
     const kv = new FakeKv();
     const store = new KvProactiveStore(kv);
@@ -454,6 +552,9 @@ await testKvFireMirrorKeepsUserReplyReset();
 await testKvFireMirrorCountsOneMissedFire();
 await testKvFireAtMirrorIsMonotonic();
 await testKvDuplicateUpsertRepairsMissingIndex();
+await testKvListRepairsOrphanedProactivePair();
+await testKvListDoesNotRemoveIndexedPairOnTransientMiss();
+await testKvGetAppliesFireMirror();
 await testKvPatchRepairsMissingIndexWhenChanged();
 await testKvPatchRepairsMissingIndexWhenUnchanged();
 await testKvNoopFirePatchRepairsRuntimeMirrors();
