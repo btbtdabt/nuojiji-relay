@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
 import { runProactiveTick } from '../src/proactive/tick.js';
-import { BACKEND_FIRE_COOLDOWN_MS } from '../src/store/proactiveStore.js';
+import {
+    BACKEND_FIRE_COOLDOWN_MS,
+    PROACTIVE_GENERATION_CLAIM_TTL_MS,
+} from '../src/store/proactiveStore.js';
 
 class FakeKv {
     constructor() {
@@ -322,7 +325,7 @@ async function testIntervalModeCanFireBelowBackendImpulseCooldown() {
     }
 }
 
-async function testActiveGenerationClaimCoversSlowRetryBudget() {
+async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
     const app = createApp();
     const kv = new FakeKv();
     const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
@@ -376,7 +379,7 @@ async function testActiveGenerationClaimCoversSlowRetryBudget() {
         assert.equal(registerRes.status, 200);
 
         const stored = parseStoredPair(kv);
-        stored.generationStartedAt = now - (16 * 60_000 - 1);
+        stored.generationStartedAt = now - (PROACTIVE_GENERATION_CLAIM_TTL_MS - 60_000);
         stored.generationClaimId = 'still-running';
         await kv.put('p:inbox:user:char', JSON.stringify(stored));
 
@@ -392,5 +395,5 @@ async function testActiveGenerationClaimCoversSlowRetryBudget() {
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testIntervalModeCanFireBelowBackendImpulseCooldown();
-await testActiveGenerationClaimCoversSlowRetryBudget();
+await testActiveGenerationClaimBlocksWithinConfiguredTtl();
 console.log('proactiveTick tests passed');
