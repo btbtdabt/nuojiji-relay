@@ -27,6 +27,9 @@ export function extractPushBodies(content) {
         const t = obj.t;
         if (t === 'text' && typeof obj.c === 'string' && obj.c.trim()) {
             bodies.push(obj.c.trim());
+        } else if (t === 'reply' && typeof obj.c === 'string' && obj.c.trim()) {
+            const quote = typeof obj.quote === 'string' ? obj.quote.trim() : '';
+            bodies.push(quote ? `回复「${quote}」：${obj.c.trim()}` : obj.c.trim());
         } else if (t === 'voice') {
             bodies.push('[语音消息]');
         } else if (t === 'sticker') {
