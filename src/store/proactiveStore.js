@@ -56,6 +56,29 @@ function mergeLifeState(prevLifeState, nextLifeState, { allowStreakDecrease = tr
     return merged;
 }
 
+function applyFireMirror(rec, firedAt) {
+    const ts = Number(firedAt) || 0;
+    if (ts <= 0 || ts <= (Number(rec.lastFiredAt) || 0)) return rec;
+
+    const lifeState = (rec.lifeState && typeof rec.lifeState === 'object') ? { ...rec.lifeState } : {};
+    const userRepliedAfterFire = (Number(rec.lastInteractionAt) || 0) > ts;
+    const lastProactiveSentAt = Number(lifeState.lastProactiveSentAt) || 0;
+
+    rec.lastFiredAt = ts;
+    lifeState.lastImpulseAt = Math.max(Number(lifeState.lastImpulseAt) || 0, ts);
+    lifeState.lastProactiveSentAt = Math.max(lastProactiveSentAt, ts);
+
+    if (!userRepliedAfterFire) {
+        rec.lastInteractionAt = Math.max(Number(rec.lastInteractionAt) || 0, ts);
+        if (ts > lastProactiveSentAt) {
+            lifeState.unansweredStreak = (Number(lifeState.unansweredStreak) || 0) + 1;
+        }
+    }
+
+    rec.lifeState = lifeState;
+    return rec;
+}
+
 export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     const prev = prevRecord || {};
     const next = omitUndefined(nextRecord);
@@ -220,8 +243,7 @@ export class KvProactiveStore {
                 try {
                     const rec = JSON.parse(raw);
                     const firedAt = await this._getFireAt(pairKey);
-                    if (firedAt > (Number(rec.lastFiredAt) || 0)) rec.lastFiredAt = firedAt;
-                    out.push(rec);
+                    out.push(applyFireMirror(rec, firedAt));
                 } catch { /* skip */ }
             }
         }

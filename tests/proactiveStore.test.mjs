@@ -160,6 +160,83 @@ async function testKvListUsesFireAtMirror() {
     assert.equal(rows[0].lastFiredAt, 30_000);
 }
 
+async function testKvFireMirrorRepairsRuntimeStateWhenUnanswered() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        lastFiredAt: 10_000,
+        lastInteractionAt: 15_000,
+        lifeState: {
+            unansweredStreak: 1,
+            lastImpulseAt: 10_000,
+            lastProactiveSentAt: 10_000,
+        },
+    };
+
+    await store.upsert(rec);
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    await kv.put('pf:inbox:user:char', '30000');
+
+    const rows = await store.listByInbox('inbox');
+    assert.equal(rows[0].lastFiredAt, 30_000);
+    assert.equal(rows[0].lastInteractionAt, 30_000);
+    assert.equal(rows[0].lifeState.lastImpulseAt, 30_000);
+    assert.equal(rows[0].lifeState.lastProactiveSentAt, 30_000);
+    assert.equal(rows[0].lifeState.unansweredStreak, 2);
+}
+
+async function testKvFireMirrorKeepsUserReplyReset() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        lastFiredAt: 10_000,
+        lastInteractionAt: 40_000,
+        lifeState: {
+            unansweredStreak: 0,
+            lastImpulseAt: 10_000,
+            lastProactiveSentAt: 10_000,
+        },
+    };
+
+    await store.upsert(rec);
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    await kv.put('pf:inbox:user:char', '30000');
+
+    const rows = await store.listByInbox('inbox');
+    assert.equal(rows[0].lastFiredAt, 30_000);
+    assert.equal(rows[0].lastInteractionAt, 40_000);
+    assert.equal(rows[0].lifeState.unansweredStreak, 0);
+}
+
+async function testKvFireMirrorCountsOneMissedFire() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        lastFiredAt: 0,
+        lastInteractionAt: 0,
+        lifeState: { unansweredStreak: 0 },
+    };
+
+    await store.upsert(rec);
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    await kv.put('pf:inbox:user:char', '30000');
+
+    const rows = await store.listByInbox('inbox');
+    assert.equal(rows[0].lifeState.unansweredStreak, 1);
+}
+
 async function testKvFireAtMirrorIsMonotonic() {
     const kv = new FakeKv();
     const store = new KvProactiveStore(kv);
@@ -186,5 +263,8 @@ testMergeAllowsStreakResetAfterUserReply();
 testMergeInitializesNewRecordEnabledAt();
 await testPatchKeepsNewerServerTiming();
 await testKvListUsesFireAtMirror();
+await testKvFireMirrorRepairsRuntimeStateWhenUnanswered();
+await testKvFireMirrorKeepsUserReplyReset();
+await testKvFireMirrorCountsOneMissedFire();
 await testKvFireAtMirrorIsMonotonic();
 console.log('proactiveStore tests passed');
