@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createApp } from '../src/app.js';
 import {
     appendRelevantInfoMessage,
     buildCoordinatorConfig,
@@ -196,6 +197,61 @@ async function testDebugEventStore() {
     assert.ok(events[0].id);
 }
 
+async function testAgentStreamUsesSeparateStopChunk() {
+    const app = createApp();
+    const env = {
+        OUTBOX: new FakeKv(),
+        RELAY_SECRET: 'test-secret',
+        AGENT_FINAL_API_URL: 'https://api.openai.example',
+        AGENT_FINAL_API_KEY: 'final-key',
+        AGENT_FINAL_MODEL: 'test-model',
+    };
+    const originalFetch = globalThis.fetch;
+    const aiRequests = [];
+
+    globalThis.fetch = async (_url, init) => {
+        aiRequests.push(JSON.parse(String(init?.body || '{}')));
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: 'hello stream' } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const res = await app.fetch(new Request('https://relay.example/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer test-secret',
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                stream: true,
+                messages: [{ role: 'user', content: 'hi' }],
+            }),
+        }), env);
+
+        assert.equal(res.status, 200);
+        assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+        assert.equal(aiRequests[0].stream, true);
+
+        const lines = (await res.text()).trim().split('\n').filter((line) => line.startsWith('data:'));
+        assert.equal(lines.length, 4);
+        assert.equal(lines[3], 'data: [DONE]');
+
+        const contentChunk = JSON.parse(lines[1].slice(5).trim());
+        assert.equal(contentChunk.choices[0].delta.content, 'hello stream');
+        assert.equal(contentChunk.choices[0].finish_reason, null);
+
+        const stopChunk = JSON.parse(lines[2].slice(5).trim());
+        assert.deepEqual(stopChunk.choices[0].delta, {});
+        assert.equal(stopChunk.choices[0].finish_reason, 'stop');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 function testSummarizeAiSettingsMasksKeys() {
     const summary = summarizeAiSettings({
         mainApiUrl: 'https://relay.example/v1',
@@ -239,6 +295,7 @@ testCoordinatorMessageFormatting();
 testCoordinatorMessageFormattingOmitsEmbeddedTranscript();
 testNuojijiReplyDetector();
 testGeminiFunctionResponseUsesUserRole();
+await testAgentStreamUsesSeparateStopChunk();
 await testDebugEventStore();
 testSummarizeAiSettingsMasksKeys();
 testFullDebugHelpers();

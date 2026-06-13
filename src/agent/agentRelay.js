@@ -108,7 +108,11 @@ function streamCompletionPayload({ id, created, model, content }) {
         },
         {
             id, object: 'chat.completion.chunk', created, model,
-            choices: [{ index: 0, delta: { content }, finish_reason: 'stop' }],
+            choices: [{ index: 0, delta: { content }, finish_reason: null }],
+        },
+        {
+            id, object: 'chat.completion.chunk', created, model,
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
         },
     ];
     const encoder = new TextEncoder();
