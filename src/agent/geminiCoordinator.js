@@ -203,6 +203,23 @@ function messageAlreadyEmbedded(message, instructionText) {
     return normalizeForContainment(instructionText).includes(normalizedContent);
 }
 
+function latestUserMessageText(messages) {
+    for (let index = (Array.isArray(messages) ? messages.length : 0) - 1; index >= 0; index--) {
+        const message = messages[index];
+        if (String(message?.role || '').toLowerCase() !== 'user') continue;
+        const text = messageContentToText(message).trim();
+        if (text) return text;
+    }
+    return '';
+}
+
+function utf8Base64(text) {
+    const bytes = new TextEncoder().encode(String(text || ''));
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
+}
+
 export function formatMessagesForCoordinator(messages, tools = []) {
     const safeMessages = Array.isArray(messages) ? messages : [];
     const requestInstructionMessages = [];
@@ -295,6 +312,7 @@ async function callGeminiGenerateContent({
     apiKey,
     baseUrl,
     authType = 'bearer',
+    currentQuery = '',
     model,
     contents,
     functionDeclarations,
@@ -324,6 +342,8 @@ async function callGeminiGenerateContent({
         } else {
             headers.Authorization = `Bearer ${apiKey}`;
         }
+        const query = String(currentQuery || '').trim();
+        if (query) headers['X-Ombre-Current-Query-B64'] = utf8Base64(query.slice(0, 4000));
         response = await fetchImpl(endpoint, {
             method: 'POST',
             headers,
@@ -417,8 +437,10 @@ export async function runOmbreCoordinator({
     if (functionDeclarations.length === 0) return { relevantInfo: '', skipped: 'no mcp tools', debug: { ...debug, skipped: 'no mcp tools' } };
 
     const coordinatorInput = formatMessagesForCoordinator(messages, tools);
+    const currentQuery = latestUserMessageText(messages);
     if (debugFull) {
         debug.full.coordinator_input = clipDebugValue(coordinatorInput, debugCharLimit);
+        debug.full.current_query = clipDebugValue(currentQuery, debugCharLimit);
     }
     const contents = [{
         role: 'user',
@@ -431,6 +453,7 @@ export async function runOmbreCoordinator({
             apiKey,
             baseUrl,
             authType,
+            currentQuery: contents.length === 1 ? currentQuery : '',
             model,
             contents,
             functionDeclarations,
