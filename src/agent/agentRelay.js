@@ -14,6 +14,13 @@ import {
 const RELEVANT_INFO_HEADER = '[Relevant info that could help as context]';
 const COORDINATOR_ERROR_PREFIX = '【coordinator报错】';
 
+class CoordinatorUnavailableError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'CoordinatorUnavailableError';
+    }
+}
+
 function envValue(env, keys, fallback = '') {
     for (const key of keys) {
         const value = env?.[key] ?? (typeof process !== 'undefined' ? process.env?.[key] : undefined);
@@ -164,7 +171,7 @@ export async function handleAgentChatCompletions(c) {
     let coordinatorDebug = { skipped: '' };
     let coordinatorError = null;
 
-    if (coordinatorConfig.apiKey && mcpServer?.url) {
+    if (coordinatorConfig.apiKey && coordinatorConfig.baseUrl && mcpServer?.url) {
         try {
             const result = await runOmbreCoordinator({
                 messages: body.messages,
@@ -187,6 +194,7 @@ export async function handleAgentChatCompletions(c) {
                     ? 'missing coordinator base url'
                     : 'missing mcp server url',
         };
+        coordinatorError = new CoordinatorUnavailableError(coordinatorDebug.skipped);
     }
 
     if (coordinatorError) {

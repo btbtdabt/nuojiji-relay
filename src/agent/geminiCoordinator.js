@@ -8,7 +8,7 @@ const DEFAULT_COORDINATOR_MODEL = 'gemini-3.5-flash';
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_GEMINI_RETRY_ATTEMPTS = 2;
-const RETRYABLE_GEMINI_STATUSES = new Set([429, 500, 502, 503, 504]);
+const RETRYABLE_GEMINI_STATUSES = new Set([429, 500, 502, 503, 504, 520, 522, 524]);
 
 function isPlainObject(value) {
     return value && typeof value === 'object' && !Array.isArray(value);
@@ -419,14 +419,30 @@ async function callGeminiGenerateContentOnce({
 
 async function callGeminiGenerateContent(options) {
     const retryAttempts = Math.max(0, Math.min(5, Number(options.retryAttempts ?? DEFAULT_GEMINI_RETRY_ATTEMPTS) || 0));
+    const onAttempt = typeof options.onAttempt === 'function' ? options.onAttempt : null;
     let lastError = null;
     for (let attempt = 0; attempt <= retryAttempts; attempt++) {
         if (attempt > 0) await sleep(Math.min(1000 * 2 ** (attempt - 1), 5000));
         try {
-            return await callGeminiGenerateContentOnce(options);
+            const candidate = await callGeminiGenerateContentOnce(options);
+            onAttempt?.({
+                attempt: attempt + 1,
+                max_attempts: retryAttempts + 1,
+                ok: true,
+            });
+            return candidate;
         } catch (error) {
             lastError = error;
-            if (attempt >= retryAttempts || !isRetryableGeminiError(error)) break;
+            const retryable = isRetryableGeminiError(error);
+            onAttempt?.({
+                attempt: attempt + 1,
+                max_attempts: retryAttempts + 1,
+                ok: false,
+                status: Number(error?.status) || null,
+                retryable,
+                error: String(error?.message || error).slice(0, 300),
+            });
+            if (attempt >= retryAttempts || !retryable) break;
         }
     }
     throw lastError;
@@ -478,7 +494,7 @@ export async function runOmbreCoordinator({
     debugCharLimit = 200_000,
     fetchImpl,
 }) {
-    const debug = { skipped: '', tool_count: 0, rounds: 0, calls: [], errors: [] };
+    const debug = { skipped: '', tool_count: 0, rounds: 0, calls: [], errors: [], gemini_attempts: [] };
     if (!apiKey) return { relevantInfo: '', skipped: 'missing coordinator api key', debug: { ...debug, skipped: 'missing coordinator api key' } };
     if (!baseUrl) return { relevantInfo: '', skipped: 'missing coordinator base url', debug: { ...debug, skipped: 'missing coordinator base url' } };
     if (!mcpServer?.url) return { relevantInfo: '', skipped: 'missing mcp server url', debug: { ...debug, skipped: 'missing mcp server url' } };
@@ -524,6 +540,9 @@ export async function runOmbreCoordinator({
             functionDeclarations,
             timeoutMs,
             retryAttempts: geminiRetryAttempts,
+            onAttempt: (attemptDebug) => {
+                debug.gemini_attempts.push({ round: round + 1, ...attemptDebug });
+            },
             fetchImpl,
         });
 

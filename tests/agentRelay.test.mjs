@@ -237,6 +237,10 @@ async function testAgentStreamUsesSeparateStopChunk() {
     const env = {
         OUTBOX: new FakeKv(),
         RELAY_SECRET: 'test-secret',
+        AGENT_MCP_URL: 'https://brain.example.com/mcp',
+        AGENT_COORDINATOR_API_KEY: 'coordinator-key',
+        AGENT_COORDINATOR_BASE_URL: 'https://gateway.example.com/v1beta',
+        AGENT_COORDINATOR_MODEL: 'gemini-3.5-flash',
         AGENT_FINAL_API_URL: 'https://api.openai.example',
         AGENT_FINAL_API_KEY: 'final-key',
         AGENT_FINAL_MODEL: 'test-model',
@@ -245,8 +249,50 @@ async function testAgentStreamUsesSeparateStopChunk() {
     const originalFetch = globalThis.fetch;
     const aiRequests = [];
 
-    globalThis.fetch = async (_url, init) => {
-        aiRequests.push(JSON.parse(String(init?.body || '{}')));
+    globalThis.fetch = async (url, init) => {
+        const textUrl = String(url);
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (textUrl.includes('brain.example.com')) {
+            if (body.method === 'initialize') {
+                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
+                });
+            }
+            if (body.method === 'notifications/initialized') {
+                return new Response('', { status: 202 });
+            }
+            if (body.method === 'tools/list') {
+                return new Response(JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: body.id,
+                    result: {
+                        tools: [{
+                            name: 'breath',
+                            description: 'Read memory.',
+                            inputSchema: { type: 'object', properties: {} },
+                        }],
+                    },
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+        }
+        if (textUrl.includes('gateway.example.com')) {
+            return new Response(JSON.stringify({
+                candidates: [{
+                    content: {
+                        role: 'model',
+                        parts: [{ text: 'NO_RELEVANT_INFO' }],
+                    },
+                }],
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        aiRequests.push(body);
         assert.equal(init?.headers?.['X-Ombre-Session-Id'], 'main');
         return new Response(JSON.stringify({
             choices: [{ message: { content: 'hello stream' } }],
@@ -326,9 +372,9 @@ async function testCoordinatorRetriesTransientGeminiFailures() {
         geminiCalls++;
         if (geminiCalls < 3) {
             return new Response(JSON.stringify({
-                error: { code: 503, message: 'temporary unavailable', status: 'UNAVAILABLE' },
+                error: { code: 520, message: 'temporary unavailable', status: 'UNKNOWN' },
             }), {
-                status: 503,
+                status: 520,
                 headers: { 'content-type': 'application/json' },
             });
         }
@@ -359,6 +405,17 @@ async function testCoordinatorRetriesTransientGeminiFailures() {
         assert.equal(geminiCalls, 3);
         assert.equal(result.relevantInfo, '');
         assert.equal(result.debug.rounds, 1);
+        assert.deepEqual(result.debug.gemini_attempts.map((item) => ({
+            round: item.round,
+            attempt: item.attempt,
+            ok: item.ok,
+            status: item.status,
+            retryable: item.retryable,
+        })), [
+            { round: 1, attempt: 1, ok: false, status: 520, retryable: true },
+            { round: 1, attempt: 2, ok: false, status: 520, retryable: true },
+            { round: 1, attempt: 3, ok: true, status: undefined, retryable: undefined },
+        ]);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -460,6 +517,88 @@ async function testCoordinatorFailureSkipsFinalModel() {
     }
 }
 
+async function testMissingCoordinatorConfigSkipsFinalModel() {
+    const app = createApp();
+    const originalFetch = globalThis.fetch;
+    let finalCalls = 0;
+
+    globalThis.fetch = async (url) => {
+        if (String(url).includes('api.openai.example')) {
+            finalCalls++;
+            return new Response(JSON.stringify({
+                choices: [{ message: { content: 'should not happen' } }],
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        throw new Error(`unexpected fetch ${String(url)}`);
+    };
+
+    try {
+        const cases = [
+            {
+                name: 'missing coordinator api key',
+                env: {
+                    AGENT_COORDINATOR_BASE_URL: 'https://gateway.example.com/v1beta',
+                    AGENT_MCP_URL: 'https://brain.example.com/mcp',
+                },
+            },
+            {
+                name: 'missing coordinator base url',
+                env: {
+                    AGENT_COORDINATOR_API_KEY: 'coordinator-key',
+                    AGENT_MCP_URL: 'https://brain.example.com/mcp',
+                },
+            },
+            {
+                name: 'missing mcp server url',
+                env: {
+                    AGENT_COORDINATOR_API_KEY: 'coordinator-key',
+                    AGENT_COORDINATOR_BASE_URL: 'https://gateway.example.com/v1beta',
+                },
+            },
+        ];
+
+        for (const testCase of cases) {
+            const env = {
+                OUTBOX: new FakeKv(),
+                RELAY_SECRET: 'test-secret',
+                AGENT_FINAL_API_URL: 'https://api.openai.example',
+                AGENT_FINAL_API_KEY: 'final-key',
+                AGENT_FINAL_MODEL: 'test-final-model',
+                ...testCase.env,
+            };
+            const res = await app.fetch(new Request('https://relay.example/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    authorization: 'Bearer test-secret',
+                    'content-type': 'application/json',
+                },
+                body: JSON.stringify({
+                    messages: [{ role: 'user', content: 'hi' }],
+                }),
+            }), env);
+
+            assert.equal(res.status, 200);
+            const data = await res.json();
+            const content = data.choices?.[0]?.message?.content || '';
+            assert.match(content, /coordinator报错/);
+            assert.match(content, new RegExp(testCase.name));
+
+            const events = await listAgentEvents(env, { limit: 3 });
+            assert.equal(events[0].stage, 'coordinator');
+            assert.equal(events[0].ok, false);
+            assert.equal(events[0].coordinator.skipped, testCase.name);
+            assert.equal(events[0].final.skipped, true);
+        }
+
+        assert.equal(finalCalls, 0);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 function testSummarizeAiSettingsMasksKeys() {
     const summary = summarizeAiSettings({
         mainApiUrl: 'https://relay.example/v1',
@@ -508,6 +647,7 @@ testGeminiFunctionResponseUsesUserRole();
 await testAgentStreamUsesSeparateStopChunk();
 await testCoordinatorRetriesTransientGeminiFailures();
 await testCoordinatorFailureSkipsFinalModel();
+await testMissingCoordinatorConfigSkipsFinalModel();
 await testDebugEventStore();
 testSummarizeAiSettingsMasksKeys();
 testFullDebugHelpers();
