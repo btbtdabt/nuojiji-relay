@@ -33,6 +33,7 @@ import { mergePendingCommitments, parseCommitmentsFromContent } from './util/com
 
 const VERSION = '1.0.0';
 const TEMP_PROACTIVE_QUIET_HOURS = [3, 9];
+const COORDINATOR_ERROR_PREFIX = '【coordinator报错】';
 
 function envFlag(env, key) {
     const value = env?.[key] ?? (typeof process !== 'undefined' ? process.env?.[key] : undefined);
@@ -75,6 +76,68 @@ async function persistOutputCommitments(proactive, { inboxId, userId, charId, co
     );
     await proactive.patch(inboxId, userId, charId, { pendingCommitments });
     return commitments;
+}
+
+function visibleReplyBubblesForHistory(content) {
+    const text = String(content || '').trim();
+    if (!text || text.startsWith(COORDINATOR_ERROR_PREFIX)) return [];
+
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const bodies = [];
+    let sawJson = false;
+    for (const line of lines) {
+        if (!line.startsWith('{')) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (!obj || typeof obj !== 'object') continue;
+        sawJson = true;
+        const t = obj.t;
+        if ((t === 'text' || t === 'reply') && typeof obj.c === 'string' && obj.c.trim()) {
+            const quote = t === 'reply' && typeof obj.quote === 'string' ? obj.quote.trim() : '';
+            bodies.push(quote ? `回复「${quote}」：${obj.c.trim()}` : obj.c.trim());
+        } else if (t === 'voice') {
+            bodies.push('[语音消息]');
+        } else if (t === 'sticker') {
+            bodies.push('[表情]');
+        } else if (t === 'image' || t === 'sim_img' || t === 'simulated_image') {
+            bodies.push('[图片]');
+        } else if (t === 'forward') {
+            bodies.push('[聊天记录]');
+        } else if (t === 'transfer') {
+            bodies.push('[转账]');
+        } else if (t === 'gift') {
+            bodies.push('[礼物]');
+        }
+    }
+    return sawJson
+        ? bodies.filter((body) => body && !body.startsWith(COORDINATOR_ERROR_PREFIX))
+        : [text.slice(0, 1000)];
+}
+
+async function persistGeneratedReplyToProactiveWindow(proactive, {
+    inboxId,
+    userId,
+    charId,
+    content,
+    createdAt,
+}) {
+    if (!userId || !charId || !content) return 0;
+    const bubbles = visibleReplyBubblesForHistory(content)
+        .map((text) => ({ sender: 'char', text }))
+        .filter((message) => message.text);
+    if (!bubbles.length) return 0;
+
+    const current = await proactive.get?.(inboxId, userId, charId);
+    if (!current) return 0;
+    const recentMessages = [
+        ...(Array.isArray(current.recentMessages) ? current.recentMessages : []),
+        ...bubbles,
+    ].slice(-PROACTIVE_WINDOW_CAP);
+    await proactive.patch(inboxId, userId, charId, {
+        recentMessages,
+        lastInteractionAt: createdAt,
+    });
+    return bubbles.length;
 }
 
 export function createApp() {
@@ -194,6 +257,7 @@ export function createApp() {
         const id = makeMessageId(requestId);
         let item;
         let outputCommitments = [];
+        let proactiveReplyBubbles = 0;
         try {
             try {
                 const content = await runGeneration(settings, messages, maxTokens);
@@ -211,6 +275,17 @@ export function createApp() {
             }
             await outbox.put(inboxId, item);
             if (!item.error && proactiveUserId && proactiveCharId) {
+                try {
+                    proactiveReplyBubbles = await persistGeneratedReplyToProactiveWindow(proactive, {
+                        inboxId,
+                        userId: proactiveUserId,
+                        charId: proactiveCharId,
+                        content: item.content,
+                        createdAt: item.createdAt,
+                    });
+                } catch (e) {
+                    console.warn('[generate] proactive reply window persistence failed:', e?.message);
+                }
                 try {
                     outputCommitments = await persistOutputCommitments(proactive, {
                         inboxId,
@@ -255,6 +330,7 @@ export function createApp() {
             aiSettings: summarizeAiSettings(settings),
             responseChars: item.content ? String(item.content).length : 0,
             commitmentCount: outputCommitments.length,
+            proactiveReplyBubbles,
             error: item.error ? debugError(new Error(item.error)) : null,
             durationMs: Date.now() - startedAt,
             full: debugFull ? {

@@ -501,7 +501,86 @@ async function testGenerateImmediatelyUpdatesProactiveInteractionState() {
         assert.equal(stored.generationStartedAt, 0);
         assert.equal(stored.generationClaimId, null);
         assert.equal(stored.lifeState.unansweredStreak, 0);
+        assert.deepEqual(stored.recentMessages, [
+            { sender: 'char', text: 'old proactive' },
+            { sender: 'char', text: 'normal reply' },
+        ]);
         assert.deepEqual(stored.pendingCommitments || [], []);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testGenerateDoesNotAppendCoordinatorErrorsToProactiveWindow() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    const now = 36_250_000;
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+        choices: [{
+            message: {
+                content: JSON.stringify({ t: 'text', c: '【coordinator报错】 Gemini coordinator HTTP 520: error code: 520' }),
+            },
+        }],
+    }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+    });
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'interval',
+            interval: 1,
+            intervalUnit: 'minutes',
+            probability: 'high',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}',
+            lifeState: { unansweredStreak: 0 },
+            recentMessages: [{ sender: 'me', text: 'before' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        const generateRes = await postJson(app, env, '/generate', {
+            requestId: 'req-coordinator-error',
+            inboxId: 'inbox',
+            messages: [{ role: 'user', content: 'I replied now' }],
+            settings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            meta: { userId: 'user', charId: 'char', roundId: 'round' },
+        });
+        assert.equal(generateRes.status, 202);
+
+        const stored = parseStoredPair(kv);
+        assert.deepEqual(stored.recentMessages, [{ sender: 'me', text: 'before' }]);
+        assert.equal(stored.lifeState.unansweredStreak, 0);
     } finally {
         Date.now = originalNow;
         Math.random = originalRandom;
@@ -815,6 +894,7 @@ await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testIntervalModeCanFireBelowBackendImpulseCooldown();
 await testTickSkipsShortlyAfterUserInteraction();
 await testGenerateImmediatelyUpdatesProactiveInteractionState();
+await testGenerateDoesNotAppendCoordinatorErrorsToProactiveWindow();
 await testGeneratePersistsOutputCommitments();
 await testPendingCommitmentsGateProactiveTick();
 await testProactiveGenerationErrorDoesNotConsumeFireCooldown();
