@@ -45,6 +45,15 @@ function fillTemplate(template, { transcript, reason, memory }) {
         .replaceAll('{{MEMORY_CONTEXT}}', memory || '');
 }
 
+export function upgradeLegacyImageSchema(systemContent) {
+    const text = String(systemContent || '');
+    if (text.includes('"sub":"selfie|scene"')) return text;
+    return text.replace(
+        /{"t":"image","d":"描述照片内容","loc":"地点","time":"时间"}photo—d=对话语言简短描述\(如:刚买的蛋糕\/窗外的晚霞\/自拍\)/g,
+        '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:XXX] 描述照片内容","loc":"地点","time":"时间"}photo—sub:selfie=角色本人入镜, scene=角色不入镜的食物/物品/风景/环境; d 必须以 [SUBJECT:XXX] 开头'
+    );
+}
+
 async function clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest = null) {
     const current = latest || await proactive.get?.(rec.inboxId, rec.userId, rec.charId);
     if (!current || current.generationClaimId !== generationClaimId) return;
@@ -147,7 +156,9 @@ export async function runProactiveTick(env) {
             }
             // 先填即时真时间哨兵（§NOW_*§），再填滑窗/理由/记忆占位符。
             const timedTemplate = renderTimeTokens(rec.promptTemplate, rec.timeSpec, now, rec.lastInteractionAt || 0);
-            const systemContent = fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory });
+            const systemContent = upgradeLegacyImageSchema(
+                fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory })
+            );
             // ⚠️ 必须追加一条 user 占位（与 APP 本地路径 useAIRespond.js 的「请开始回复。」对齐）：
             //    只有 system 一条时，OpenAI/Claude 能跑，但走 gemini 反代（OpenAI→Gemini 转译）时
             //    system 会被塞进 systemInstruction、不进 contents，导致 contents 为空 → 代理报

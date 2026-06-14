@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
-import { PROACTIVE_USER_REPLY_GRACE_MS, runProactiveTick } from '../src/proactive/tick.js';
+import { PROACTIVE_USER_REPLY_GRACE_MS, runProactiveTick, upgradeLegacyImageSchema } from '../src/proactive/tick.js';
 import {
     BACKEND_FIRE_COOLDOWN_MS,
     PROACTIVE_GENERATION_CLAIM_TTL_MS,
@@ -56,6 +56,20 @@ async function getJson(app, env, path) {
 
 function parseStoredPair(kv) {
     return JSON.parse(kv.map.get('p:inbox:user:char'));
+}
+
+function testUpgradeLegacyImageSchema() {
+    const noImage = 'text only';
+    assert.equal(upgradeLegacyImageSchema(noImage), noImage);
+
+    const current = '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:XXX] 描述照片内容","loc":"地点","time":"时间"}';
+    assert.equal(upgradeLegacyImageSchema(current), current);
+
+    const legacy = '{"t":"image","d":"描述照片内容","loc":"地点","time":"时间"}photo—d=对话语言简短描述(如:刚买的蛋糕/窗外的晚霞/自拍)';
+    const upgraded = upgradeLegacyImageSchema(legacy);
+    assert.match(upgraded, /"sub":"selfie\|scene"/);
+    assert.match(upgraded, /\[SUBJECT:XXX\]/);
+    assert.match(upgraded, /selfie=角色本人入镜/);
 }
 
 async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
@@ -550,6 +564,7 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
     }
 }
 
+testUpgradeLegacyImageSchema();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testIntervalModeCanFireBelowBackendImpulseCooldown();
