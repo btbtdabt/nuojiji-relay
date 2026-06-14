@@ -373,6 +373,14 @@ export function createApp() {
                     : (item.error ? ['生成失败，点开查看'] : extractPushBodies(item.content));
                 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
                 let i = 0;
+                const pushSummary = {
+                    attempts: 0,
+                    ok: 0,
+                    failed: 0,
+                    gone: 0,
+                    channels: {},
+                    reasons: [],
+                };
                 for (const body of bodies) {
                     // 逐条之间加真人节奏延迟（按字数估打字时长），第一条立即发。
                     // ⚠️ Cloudflare Workers waitUntil 有时长上限，单条延迟封顶 + 总条数防超时。
@@ -390,23 +398,29 @@ export function createApp() {
                     };
                     for (const s of subs) {
                         const res = await dispatchPush(c.env, s, payload);
-                        await logAgentEvent(c.env, {
-                            type: 'relay_push',
-                            ok: !!res?.ok,
-                            requestId,
-                            inboxId,
-                            userId: item.userId,
-                            charId: item.charId,
-                            roundId: item.roundId,
-                            channel: s?.channel || 'web',
-                            bodyIndex: i,
-                            gone: !!res?.gone,
-                            reason: res?.reason || '',
-                        });
+                        const channel = s?.channel || 'web';
+                        pushSummary.attempts++;
+                        pushSummary.channels[channel] = (pushSummary.channels[channel] || 0) + 1;
+                        if (res?.ok) pushSummary.ok++;
+                        else pushSummary.failed++;
+                        if (res?.gone) pushSummary.gone++;
+                        if (res?.reason && pushSummary.reasons.length < 5) pushSummary.reasons.push(String(res.reason).slice(0, 160));
                         if (res?.gone) await sub.remove(inboxId, s);
                     }
                     i++;
                 }
+                await logAgentEvent(c.env, {
+                    type: 'relay_push',
+                    ok: pushSummary.failed === 0,
+                    requestId,
+                    inboxId,
+                    userId: item.userId,
+                    charId: item.charId,
+                    roundId: item.roundId,
+                    bodyCount: bodies.length,
+                    subscriptionCount: subs.length,
+                    ...pushSummary,
+                });
             } catch (e) {
                 console.warn('[generate] push failed:', e?.message);
             }

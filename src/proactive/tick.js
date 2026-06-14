@@ -347,6 +347,14 @@ export async function runProactiveTick(env) {
                         : (error ? ['有新消息，点开查看'] : extractPushBodies(content));
                     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
                     let i = 0;
+                    const pushSummary = {
+                        attempts: 0,
+                        ok: 0,
+                        failed: 0,
+                        gone: 0,
+                        channels: {},
+                        reasons: [],
+                    };
                     for (const body of bodies) {
                         // 逐条之间加真人节奏延迟（按字数估打字时长），第一条立即发。封顶防 Worker 超时。
                         if (i > 0) {
@@ -363,22 +371,28 @@ export async function runProactiveTick(env) {
                         };
                         for (const s of subs) {
                             const res = await dispatchPush(env, s, payload);
-                            await logAgentEvent(env, {
-                                type: 'proactive_push',
-                                ok: !!res?.ok,
-                                requestId,
-                                inboxId: rec.inboxId,
-                                userId: rec.userId,
-                                charId: rec.charId,
-                                channel: s?.channel || 'web',
-                                bodyIndex: i,
-                                gone: !!res?.gone,
-                                reason: res?.reason || '',
-                            });
+                            const channel = s?.channel || 'web';
+                            pushSummary.attempts++;
+                            pushSummary.channels[channel] = (pushSummary.channels[channel] || 0) + 1;
+                            if (res?.ok) pushSummary.ok++;
+                            else pushSummary.failed++;
+                            if (res?.gone) pushSummary.gone++;
+                            if (res?.reason && pushSummary.reasons.length < 5) pushSummary.reasons.push(String(res.reason).slice(0, 160));
                             if (res?.gone) await sub.remove(rec.inboxId, s);
                         }
                         i++;
                     }
+                    await logAgentEvent(env, {
+                        type: 'proactive_push',
+                        ok: pushSummary.failed === 0,
+                        requestId,
+                        inboxId: rec.inboxId,
+                        userId: rec.userId,
+                        charId: rec.charId,
+                        bodyCount: bodies.length,
+                        subscriptionCount: subs.length,
+                        ...pushSummary,
+                    });
                 }
             } catch (e) { console.warn('[proactive] push failed:', e?.message); }
 
