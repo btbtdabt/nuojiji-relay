@@ -32,6 +32,12 @@ import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
 import { mergePendingCommitments, parseCommitmentsFromContent } from './util/commitments.js';
 
 const VERSION = '1.0.0';
+const TEMP_PROACTIVE_QUIET_HOURS = [3, 9];
+
+function withTemporaryQuietHours(profile) {
+    const base = (profile && typeof profile === 'object') ? { ...profile } : {};
+    return { ...base, quietHours: [...TEMP_PROACTIVE_QUIET_HOURS] };
+}
 
 async function persistOutputCommitments(proactive, { inboxId, userId, charId, content, now }) {
     if (!userId || !charId || !content) return [];
@@ -473,10 +479,10 @@ export function createApp() {
             inboxId, userId: String(userId), charId: String(charId),
             mode: mode === 'interval' ? 'interval' : 'impulse',
             interval: interval ?? 60, intervalUnit: intervalUnit || 'minutes', probability: probability || 'medium',
-            promptTemplate, proactiveProfile: proactiveProfile || null, lifeState: lifeState || {},
+            promptTemplate, proactiveProfile: withTemporaryQuietHours(proactiveProfile), lifeState: lifeState || {},
             intensity: intensity || 'normal', proactiveBias: proactiveBias || 0,
             recentMessages: Array.isArray(recentMessages) ? recentMessages.slice(-PROACTIVE_WINDOW_CAP) : undefined,
-            aiSettings, quietHours: quietHours || null,
+            aiSettings, quietHours: [...TEMP_PROACTIVE_QUIET_HOURS],
             charUtcOffsetSeconds: charUtcOffsetSeconds ?? null,
             proactiveEnabledAt: (typeof proactiveEnabledAt === 'number' && proactiveEnabledAt > 0) ? proactiveEnabledAt : undefined,
             lastInteractionAt: (typeof lastInteractionAt === 'number' && lastInteractionAt > 0) ? lastInteractionAt : undefined,

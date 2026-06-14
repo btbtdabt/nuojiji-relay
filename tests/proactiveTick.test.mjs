@@ -3,6 +3,7 @@ import { createApp } from '../src/app.js';
 import {
     PROACTIVE_USER_REPLY_GRACE_MS,
     runProactiveTick,
+    upgradeProactiveImageSchema,
 } from '../src/proactive/tick.js';
 import {
     BACKEND_FIRE_COOLDOWN_MS,
@@ -59,6 +60,21 @@ async function getJson(app, env, path) {
 
 function parseStoredPair(kv) {
     return JSON.parse(kv.map.get('p:inbox:user:char'));
+}
+
+function testUpgradeProactiveImageSchema() {
+    const source = [
+        'Narration NOW → {"t":"state","c":"..."}. Image NOW → {"t":"image","d":"..."}. Simulated image → {"t":"sim_img",...}.',
+        'The image line MUST be a bare {"t":"image","d":"..."} on its own line — wrapping it in ``` breaks image generation.',
+        '{"t":"image","d":"描述照片内容","loc":"地点","time":"时间"}photo—d=对话语言简短描述(如:刚买的蛋糕/窗外的晚霞/自拍)',
+    ].join('\n');
+
+    const upgraded = upgradeProactiveImageSchema(source);
+    assert.match(upgraded, /"sub":"selfie\|scene"/);
+    assert.match(upgraded, /\[SUBJECT:XXX\] EN desc/);
+    assert.match(upgraded, /English NovelAI\/SDXL tag prompt/);
+    assert.doesNotMatch(upgraded, /{"t":"image","d":"描述照片内容"/);
+    assert.doesNotMatch(upgraded, /Image NOW → {"t":"image","d":"\.\.\."}/);
 }
 
 async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
@@ -787,6 +803,7 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
     }
 }
 
+testUpgradeProactiveImageSchema();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testIntervalModeCanFireBelowBackendImpulseCooldown();

@@ -109,6 +109,23 @@ async function testDuplicateRegisterDoesNotWriteKvOrDebug() {
     assert.equal(stored.proactiveEnabledAt, 1_000);
 }
 
+async function testRegisterOverridesQuietHoursTemporarily() {
+    const kv = new FakeKv();
+    const app = createApp();
+
+    await postRegister(app, kv, registerPayload({
+        proactiveProfile: {
+            ...registerPayload().proactiveProfile,
+            quietHours: [23, 7],
+        },
+        quietHours: [23, 7],
+    }));
+
+    const stored = JSON.parse(await kv.get('p:inbox:user:char'));
+    assert.deepEqual(stored.proactiveProfile.quietHours, [3, 9]);
+    assert.deepEqual(stored.quietHours, [3, 9]);
+}
+
 async function testMeaningfulRegisterChangeStillWrites() {
     const kv = new FakeKv();
     const app = createApp();
@@ -148,6 +165,7 @@ async function testPrivacyNoopDoesNotOvercountUpdates() {
 }
 
 await testDuplicateRegisterDoesNotWriteKvOrDebug();
+await testRegisterOverridesQuietHoursTemporarily();
 await testMeaningfulRegisterChangeStillWrites();
 await testPrivacyNoopDoesNotOvercountUpdates();
 console.log('proactiveRegister tests passed');

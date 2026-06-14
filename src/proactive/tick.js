@@ -32,6 +32,8 @@ import {
 } from '../agent/agentDebug.js';
 
 export const PROACTIVE_USER_REPLY_GRACE_MS = 60 * 1000;
+const PROACTIVE_IMAGE_SCHEMA =
+    '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:XXX] EN desc","loc":"地点","time":"时间"}photo—sub:selfie=char in photo(selfie/mirror), scene=char NOT in photo(food/scenery/pet); d MUST be English NovelAI/SDXL tag prompt; d MUST start with [SUBJECT:PERSON_EMOTION] or [SUBJECT:PERSON_ACTION] or [SUBJECT:SCENE]; no Chinese prose inside d; selfie→pose/expression/outfit+environment/background, scene→subject+environment';
 
 // 把滑窗消息渲染成转录文本（喂进 promptTemplate 的 {{RECENT_MESSAGES}}）
 function renderTranscript(recentMessages) {
@@ -49,6 +51,28 @@ function fillTemplate(template, { transcript, reason, memory }) {
         .replaceAll('{{RECENT_MESSAGES}}', transcript)
         .replaceAll('{{IMPULSE_REASON}}', reason || '')
         .replaceAll('{{MEMORY_CONTEXT}}', memory || '');
+}
+
+export function upgradeProactiveImageSchema(systemContent) {
+    let text = String(systemContent || '');
+    const imageObjectSchema = '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:XXX] EN desc","loc":"地点","time":"时间"}';
+    text = text.replace(
+        /{"t":"image","d":"描述照片内容","loc":"地点","time":"时间"}photo—d=对话语言简短描述\(如:刚买的蛋糕\/窗外的晚霞\/自拍\)/g,
+        PROACTIVE_IMAGE_SCHEMA
+    );
+    text = text.replace(
+        /{"t":"image","sub":"selfie\|scene","d":"\[SUBJECT:XXX\] 描述照片内容","loc":"地点","time":"时间"}photo—sub:selfie=角色本人入镜, scene=角色不入镜的食物\/物品\/风景\/环境; d 必须以 \[SUBJECT:XXX\] 开头/g,
+        PROACTIVE_IMAGE_SCHEMA
+    );
+    text = text.replace(
+        /Image NOW → {"t":"image","d":"\.\.\."}\./g,
+        `Image NOW → ${imageObjectSchema}.`
+    );
+    text = text.replace(
+        /The image line MUST be a bare {"t":"image","d":"\.\.\."} on its own line/g,
+        `The image line MUST be a bare ${imageObjectSchema} on its own line`
+    );
+    return text;
 }
 
 function commitmentUtcOffsetSeconds(rec) {
@@ -169,7 +193,9 @@ export async function runProactiveTick(env) {
                 rec.pendingCommitments,
                 { now, utcOffsetSeconds }
             );
-            const systemContent = fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory }) + commitmentContext;
+            const systemContent = upgradeProactiveImageSchema(
+                fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory }) + commitmentContext
+            );
             // ⚠️ 必须追加一条 user 占位（与 APP 本地路径 useAIRespond.js 的「请开始回复。」对齐）：
             //    只有 system 一条时，OpenAI/Claude 能跑，但走 gemini 反代（OpenAI→Gemini 转译）时
             //    system 会被塞进 systemInstruction、不进 contents，导致 contents 为空 → 代理报
