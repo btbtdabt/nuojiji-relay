@@ -50,6 +50,11 @@ function latestMessageIsUser(messages) {
     return isUserMessage(messages[messages.length - 1]);
 }
 
+function latestMessageSignature(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return '';
+    return messageSignature(messages[messages.length - 1]);
+}
+
 function messageSignature(message) {
     if (!message || typeof message !== 'object') return '';
     const role = isUserMessage(message) ? 'user' : 'char';
@@ -85,6 +90,14 @@ function hasNewLatestUserMessage(prevMessages, nextMessages) {
     return !!prevLatestSignature
         && !latestMessageIsUser(prevMessages)
         && includesMessageSignature(nextMessages, prevLatestSignature);
+}
+
+function latestUserWindowIsCurrent(prevMessages, nextMessages) {
+    if (!latestMessageIsUser(nextMessages)) return false;
+    if (!Array.isArray(prevMessages) || prevMessages.length === 0) return true;
+    if (latestMessageIsUser(prevMessages)) return true;
+    const prevLatestSignature = latestMessageSignature(prevMessages);
+    return !prevLatestSignature || includesMessageSignature(nextMessages, prevLatestSignature);
 }
 
 function cloneRecord(record) {
@@ -173,9 +186,12 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     const incomingFiredAt = Number(next.lastFiredAt) || 0;
     const prevLastFiredAt = Number(prev.lastFiredAt) || 0;
     const newLatestUserMessage = hasNewLatestUserMessage(prev.recentMessages, next.recentMessages);
+    const replyGenerationClaim = typeof next.generationClaimId === 'string' && next.generationClaimId.startsWith('reply_');
+    const userReplyObserved = replyGenerationClaim || newLatestUserMessage
+        || latestUserWindowIsCurrent(prev.recentMessages, next.recentMessages);
 
     if (next.lifeState !== undefined) {
-        const allowStreakDecrease = newLatestUserMessage || !prevLastFiredAt || incomingInteractionAt > prevLastFiredAt;
+        const allowStreakDecrease = userReplyObserved || !prevLastFiredAt || incomingInteractionAt > prevLastFiredAt;
         merged.lifeState = mergeLifeState(prev.lifeState, next.lifeState, { allowStreakDecrease });
     }
 
@@ -209,12 +225,12 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
         merged.lastFiredAt = maxNumber(prev.lastFiredAt, next.lastFiredAt);
     }
 
-    if (newLatestUserMessage) {
+    if (userReplyObserved) {
         const inferredInteractionAt = incomingInteractionAt > prevLastFiredAt ? incomingInteractionAt : now;
         merged.lastInteractionAt = Math.max(Number(merged.lastInteractionAt) || 0, inferredInteractionAt);
     }
 
-    if (newLatestUserMessage
+    if (userReplyObserved
         || (latestMessageIsUser(next.recentMessages)
             && incomingInteractionAt > (Number(merged.lastFiredAt) || 0))) {
         const lifeState = (merged.lifeState && typeof merged.lifeState === 'object') ? { ...merged.lifeState } : {};
