@@ -235,6 +235,19 @@ export function createApp() {
                     };
                     for (const s of subs) {
                         const res = await dispatchPush(c.env, s, payload);
+                        await logAgentEvent(c.env, {
+                            type: 'relay_push',
+                            ok: !!res?.ok,
+                            requestId,
+                            inboxId,
+                            userId: item.userId,
+                            charId: item.charId,
+                            roundId: item.roundId,
+                            channel: s?.channel || 'web',
+                            bodyIndex: i,
+                            gone: !!res?.gone,
+                            reason: res?.reason || '',
+                        });
                         if (res?.gone) await sub.remove(inboxId, s);
                     }
                     i++;

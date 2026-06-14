@@ -298,6 +298,18 @@ export async function runProactiveTick(env) {
                         };
                         for (const s of subs) {
                             const res = await dispatchPush(env, s, payload);
+                            await logAgentEvent(env, {
+                                type: 'proactive_push',
+                                ok: !!res?.ok,
+                                requestId,
+                                inboxId: rec.inboxId,
+                                userId: rec.userId,
+                                charId: rec.charId,
+                                channel: s?.channel || 'web',
+                                bodyIndex: i,
+                                gone: !!res?.gone,
+                                reason: res?.reason || '',
+                            });
                             if (res?.gone) await sub.remove(rec.inboxId, s);
                         }
                         i++;
