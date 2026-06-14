@@ -34,6 +34,27 @@ import { mergePendingCommitments, parseCommitmentsFromContent } from './util/com
 const VERSION = '1.0.0';
 const TEMP_PROACTIVE_QUIET_HOURS = [3, 9];
 
+function envFlag(env, key) {
+    const value = env?.[key] ?? (typeof process !== 'undefined' ? process.env?.[key] : undefined);
+    return /^(1|true|yes|on)$/i.test(String(value || '').trim());
+}
+
+function deliveryDebugEnabled(env) {
+    return envFlag(env, 'RELAY_DELIVERY_DEBUG');
+}
+
+function latestMessageSummary(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return null;
+    const message = messages[messages.length - 1] || {};
+    const sender = message.sender || message.role || 'unknown';
+    const text = String(message.text ?? message.content ?? '');
+    return {
+        sender,
+        chars: text.length,
+        preview: text.slice(0, 80),
+    };
+}
+
 function withTemporaryQuietHours(profile) {
     const base = (profile && typeof profile === 'object') ? { ...profile } : {};
     return { ...base, quietHours: [...TEMP_PROACTIVE_QUIET_HOURS] };
@@ -310,6 +331,26 @@ export function createApp() {
         if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
         const { outbox } = await getStores(c.env);
         const items = await outbox.list(inboxId, since);
+        if (deliveryDebugEnabled(c.env)) {
+            let hiddenBySince = 0;
+            if (since > 0 && items.length === 0) {
+                try {
+                    const liveItems = await outbox.list(inboxId, 0);
+                    hiddenBySince = liveItems.filter((item) => (Number(item.createdAt) || 0) <= since).length;
+                } catch { hiddenBySince = 0; }
+            }
+            if (items.length > 0 || hiddenBySince > 0) {
+                await logAgentEvent(c.env, {
+                    type: 'relay_outbox_list',
+                    ok: true,
+                    inboxId,
+                    since,
+                    itemCount: items.length,
+                    hiddenBySince,
+                    ids: items.map((item) => item.id).slice(0, 20),
+                });
+            }
+        }
         return c.json({ items, now: nowMs() });
     });
 
@@ -320,6 +361,16 @@ export function createApp() {
         if (!inboxId || !Array.isArray(ids)) return c.json({ error: 'inboxId / ids required' }, 400);
         const { outbox } = await getStores(c.env);
         const acked = await outbox.ack(inboxId, ids);
+        if (deliveryDebugEnabled(c.env) && ids.length > 0) {
+            await logAgentEvent(c.env, {
+                type: 'relay_ack',
+                ok: true,
+                inboxId,
+                requested: ids.length,
+                acked,
+                ids: ids.map((id) => String(id)).slice(0, 20),
+            });
+        }
         return c.json({ acked });
     });
 
@@ -543,6 +594,22 @@ export function createApp() {
         if (typeof lastInteractionAt === 'number') patch.lastInteractionAt = lastInteractionAt;
         const ok = await proactive.patch(inboxId, String(userId), String(charId), patch);
         if (!ok) return c.json({ error: 'pair not registered' }, 404);
+        if (deliveryDebugEnabled(c.env)) {
+            const latest = latestMessageSummary(recentMessages);
+            const latestIsUser = latest && (latest.sender === 'me' || latest.sender === 'user');
+            if (latestIsUser || typeof lastInteractionAt === 'number') {
+                await logAgentEvent(c.env, {
+                    type: 'proactive_sync',
+                    ok: true,
+                    inboxId,
+                    userId: String(userId),
+                    charId: String(charId),
+                    windowSize: Array.isArray(recentMessages) ? recentMessages.length : null,
+                    latest,
+                    lastInteractionAt: typeof lastInteractionAt === 'number' ? lastInteractionAt : null,
+                });
+            }
+        }
         return c.json({ ok: true });
     });
 
