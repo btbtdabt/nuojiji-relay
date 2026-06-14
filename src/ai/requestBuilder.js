@@ -147,13 +147,6 @@ export function buildChatRequestBody({ apiUrl, model, messages, temperature, rea
         };
     }
 
-    // 兜底：若只有 system（或空）消息，补一条 user 占位。走 gemini 反代时 system 不进 contents，
-    //    contents 为空会被代理拒（contents is required）。与 Anthropic 分支的同款保护对齐。
-    const hasNonSystem = Array.isArray(messages)
-        && messages.some((m) => m && String(m.role || '').toLowerCase() !== 'system');
-    const safeMessages = hasNonSystem
-        ? messages
-        : [...(Array.isArray(messages) ? messages : []), { role: 'user', content: '请开始回复。' }];
     const isO = /\b(o1|o3|o4)/i.test(model);
     const safeMaxTokens = maxTokens ? Math.min(maxTokens, isO ? 100_000 : 65_536) : null;
     const tokenPayload = safeMaxTokens
@@ -161,7 +154,7 @@ export function buildChatRequestBody({ apiUrl, model, messages, temperature, rea
         : {};
     return {
         model,
-        messages: safeMessages,
+        messages: Array.isArray(messages) ? messages : [],
         ...(!isO ? { temperature } : {}),
         ...(typeof stream === 'boolean' ? { stream } : {}),
         ...tokenPayload,

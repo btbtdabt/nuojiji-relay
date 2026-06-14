@@ -196,13 +196,8 @@ export async function runProactiveTick(env) {
             const systemContent = upgradeProactiveImageSchema(
                 fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory }) + commitmentContext
             );
-            // ⚠️ 必须追加一条 user 占位（与 APP 本地路径 useAIRespond.js 的「请开始回复。」对齐）：
-            //    只有 system 一条时，OpenAI/Claude 能跑，但走 gemini 反代（OpenAI→Gemini 转译）时
-            //    system 会被塞进 systemInstruction、不进 contents，导致 contents 为空 → 代理报
-            //    「contents is required」500。补一条 user 让 contents 非空，四种 apiType 行为一致。
             const messages = [
                 { role: 'system', content: systemContent },
-                { role: 'user', content: '请开始回复。' },
             ];
 
             const requestId = `proactive_${rec.userId}_${rec.charId}_${now}`;

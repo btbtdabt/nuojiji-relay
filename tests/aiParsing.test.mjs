@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { API_CONFIGS, API_TYPES } from '../src/ai/apiConfigs.js';
 import { runGeneration } from '../src/ai/aiCaller.js';
+import { buildChatRequestBody } from '../src/ai/requestBuilder.js';
 
 function testGeminiNonStreamJoinsAllTextParts() {
     const content = API_CONFIGS[API_TYPES.GEMINI].extractContent({
@@ -63,7 +64,23 @@ async function testSseFinalDataLineWithoutTrailingNewlineIsParsed() {
     }
 }
 
+function testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText() {
+    const messages = [{ role: 'system', content: 'Generate one proactive message.' }];
+    const body = buildChatRequestBody({
+        apiUrl: 'https://gemini.amydong.workers.dev/v1',
+        model: 'gemini-3.5-flash',
+        messages,
+        temperature: 0.7,
+        stream: true,
+        maxTokens: 128,
+    });
+
+    assert.deepEqual(body.messages, messages);
+    assert.equal(JSON.stringify(body).includes('请开始回复'), false);
+}
+
 testGeminiNonStreamJoinsAllTextParts();
 testClaudeNonStreamJoinsAllTextBlocks();
 await testSseFinalDataLineWithoutTrailingNewlineIsParsed();
+testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText();
 console.log('aiParsing tests passed');

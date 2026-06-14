@@ -144,6 +144,9 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
         const firstTick = await runProactiveTick(env);
         assert.deepEqual(firstTick, { pairs: 1, fired: 1 });
         assert.equal(aiRequests.length, 1);
+        assert.equal(aiRequests[0].messages.length, 1);
+        assert.equal(aiRequests[0].messages[0].role, 'system');
+        assert.equal(JSON.stringify(aiRequests[0].messages).includes('请开始回复'), false);
         assert.match(aiRequests[0].messages[0].content, /User: before/);
 
         const firstOutbox = await getJson(app, env, '/outbox?inboxId=inbox');
@@ -176,6 +179,9 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
         const secondTick = await runProactiveTick(env);
         assert.deepEqual(secondTick, { pairs: 1, fired: 1 });
         assert.equal(aiRequests.length, 2);
+        assert.equal(aiRequests[1].messages.length, 1);
+        assert.equal(aiRequests[1].messages[0].role, 'system');
+        assert.equal(JSON.stringify(aiRequests[1].messages).includes('请开始回复'), false);
         assert.match(aiRequests[1].messages[0].content, /User: before/);
         assert.match(aiRequests[1].messages[0].content, /Char: server proactive/);
     } finally {
