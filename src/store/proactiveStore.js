@@ -22,7 +22,7 @@ import { mergePendingCommitments } from '../util/commitments.js';
 
 export const PROACTIVE_WINDOW_CAP = 30;
 // 后端 cron 触发后的最小静默（防 1 分钟 cron 连发；与手机端冷却独立）
-export const BACKEND_FIRE_COOLDOWN_MS = 20 * 60 * 1000;
+export const BACKEND_FIRE_COOLDOWN_MS = 10 * 60 * 1000;
 // 单次生成可能经历主 API 重试 + fallback；claim 用来避免中途重入重复生成。
 export const PROACTIVE_GENERATION_CLAIM_TTL_MS = 15 * 60 * 1000;
 const PROACTIVE_RUNTIME_TTL_SEC = 7 * 24 * 60 * 60;

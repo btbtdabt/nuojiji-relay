@@ -156,7 +156,7 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
         assert.deepEqual(afterStaleSync.recentMessages, afterFirstTick.recentMessages);
         assert.equal(afterStaleSync.lifeState.unansweredStreak, 1);
 
-        now += BACKEND_FIRE_COOLDOWN_MS + 1_000;
+        now += Math.max(BACKEND_FIRE_COOLDOWN_MS, 31 * 60_000);
         const secondTick = await runProactiveTick(env);
         assert.deepEqual(secondTick, { pairs: 1, fired: 1 });
         assert.equal(aiRequests.length, 2);
