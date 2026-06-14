@@ -425,10 +425,18 @@ export class KvProactiveStore {
         const idx = await this._getIdx();
         const pairKeys = [...idx];
         let indexChanged = false;
-        for (const pairKey of await this._listPairKeysByPrefix()) {
-            if (pairKeys.includes(pairKey)) continue;
-            pairKeys.push(pairKey);
-            indexChanged = true;
+        // Prefix scans are only for old data repair. Cron calls _all() every
+        // minute, so scanning on every call can exhaust Workers KV list quota.
+        if (pairKeys.length === 0) {
+            try {
+                for (const pairKey of await this._listPairKeysByPrefix()) {
+                    if (pairKeys.includes(pairKey)) continue;
+                    pairKeys.push(pairKey);
+                    indexChanged = true;
+                }
+            } catch {
+                // If KV list quota is exhausted, indexed proactive records still work.
+            }
         }
         const out = [];
         for (const pairKey of pairKeys) {

@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { createSubStore, subKey } from '../src/store/subStore.js';
 
 class FakeKv {
-    constructor({ hideList = false, rejectUndefinedCursor = false } = {}) {
+    constructor({ hideList = false, rejectUndefinedCursor = false, rejectList = false } = {}) {
         this.map = new Map();
         this.putCalls = [];
         this.deleteCalls = [];
         this.hideList = hideList;
         this.rejectUndefinedCursor = rejectUndefinedCursor;
+        this.rejectList = rejectList;
     }
 
     async get(key) {
@@ -25,6 +26,7 @@ class FakeKv {
     }
 
     async list(options = {}) {
+        if (this.rejectList) throw new Error('KV list() limit exceeded for the day.');
         if (this.rejectUndefinedCursor && Object.hasOwn(options, 'cursor') && options.cursor === undefined) {
             throw new Error('cursor must be omitted when empty');
         }
@@ -109,6 +111,17 @@ async function testKvSubscriptionLegacyRepairOmitsEmptyCursor() {
     assert.deepEqual(await store.list('inbox'), [legacy]);
 }
 
+async function testKvSubscriptionListUsesIndexWhenListQuotaExceeded() {
+    const kv = new FakeKv();
+    const store = await createSubStore({ OUTBOX: kv });
+    const sub = { channel: 'apns', token: 'token-1' };
+
+    await store.add('inbox', sub);
+    kv.rejectList = true;
+
+    assert.deepEqual(await store.list('inbox'), [sub]);
+}
+
 function testSubKeyReadsNestedTokens() {
     assert.equal(subKey({ channel: 'apns', sub: { token: 'nested-token' } }), 'nested-token');
 }
@@ -118,5 +131,6 @@ await testKvSubscriptionRemoveUpdatesIndex();
 await testKvSubscriptionPruneUpdatesIndex();
 await testKvSubscriptionListRepairsLegacyPrefixRows();
 await testKvSubscriptionLegacyRepairOmitsEmptyCursor();
+await testKvSubscriptionListUsesIndexWhenListQuotaExceeded();
 testSubKeyReadsNestedTokens();
 console.log('subStore tests passed');

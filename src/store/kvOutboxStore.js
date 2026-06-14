@@ -99,15 +99,19 @@ export class KvOutboxStore {
             // raw 为 null = item 已过期被 KV 清，但索引还在 → 下面 list 时不返回；ack/prune 会清索引
         }
 
-        // KV does not offer atomic read-modify-write for the index. A concurrent
-        // ack can overwrite a fresh put and leave a valid item without idx entry.
-        // Prefix list is eventually consistent, so it is only a recovery path:
-        // immediate reads still use idx, while later polls can repair orphans.
-        for (const entry of await this._listItemsByPrefix(inboxId)) {
-            if (itemsById.has(entry.id)) continue;
-            itemsById.set(entry.id, entry.item);
-            liveIndex.push({ id: entry.id, createdAt: entry.createdAt });
-            indexChanged = true;
+        // KV prefix scans are quota-limited. Keep orphan repair off the hot path;
+        // only try it when the index is empty, and never let quota exhaustion fail reads.
+        if (idx.length === 0) {
+            try {
+                for (const entry of await this._listItemsByPrefix(inboxId)) {
+                    if (itemsById.has(entry.id)) continue;
+                    itemsById.set(entry.id, entry.item);
+                    liveIndex.push({ id: entry.id, createdAt: entry.createdAt });
+                    indexChanged = true;
+                }
+            } catch {
+                // Indexed outbox reads still work when KV list quota is exhausted.
+            }
         }
 
         if (indexChanged) {

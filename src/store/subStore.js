@@ -82,11 +82,18 @@ class KvSubStore {
         }
 
         // Migration/repair path for subscriptions written before sidx existed.
-        for (const entry of await this._listEntriesByPrefix(inboxId)) {
-            if (byKey.has(entry.key)) continue;
-            byKey.set(entry.key, entry.value);
-            liveKeys.push(entry.key);
-            indexChanged = true;
+        // Prefix scans are quota-limited in Workers KV, so keep them off the hot path.
+        if (idx.length === 0) {
+            try {
+                for (const entry of await this._listEntriesByPrefix(inboxId)) {
+                    if (byKey.has(entry.key)) continue;
+                    byKey.set(entry.key, entry.value);
+                    liveKeys.push(entry.key);
+                    indexChanged = true;
+                }
+            } catch {
+                // If KV list quota is exhausted, indexed subscriptions still work.
+            }
         }
 
         if (indexChanged) {

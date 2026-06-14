@@ -5,6 +5,7 @@ class FakeKv {
     constructor() {
         this.map = new Map();
         this.putCalls = [];
+        this.rejectList = false;
     }
 
     async get(key) {
@@ -21,6 +22,7 @@ class FakeKv {
     }
 
     async list({ prefix = '' } = {}) {
+        if (this.rejectList) throw new Error('KV list() limit exceeded for the day.');
         return {
             keys: [...this.map.keys()]
                 .filter((name) => name.startsWith(prefix))
@@ -699,6 +701,28 @@ async function testKvListRepairsOrphanedProactivePair() {
     assert.deepEqual(JSON.parse(await kv.get('pidx')), ['inbox:user:char']);
 }
 
+async function testKvListUsesIndexWhenListQuotaExceeded() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+    };
+
+    await store.upsert(rec);
+    kv.rejectList = true;
+
+    const rows = await store.listByInbox('inbox');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].charId, 'char');
+}
+
 async function testKvListDoesNotRemoveIndexedPairOnTransientMiss() {
     const kv = new FakeKv();
     const store = new KvProactiveStore(kv);
@@ -868,6 +892,7 @@ await testKvPatchRepairsRuntimeStateWhenFireAlreadyMirrored();
 await testKvNoopPatchRepairsStaleRuntimeStateFromFireMirror();
 await testKvDuplicateUpsertRepairsMissingIndex();
 await testKvListRepairsOrphanedProactivePair();
+await testKvListUsesIndexWhenListQuotaExceeded();
 await testKvListDoesNotRemoveIndexedPairOnTransientMiss();
 await testKvGetAppliesFireMirror();
 await testKvPatchRepairsMissingIndexWhenChanged();

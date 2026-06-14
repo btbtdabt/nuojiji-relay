@@ -4,6 +4,7 @@ import { KvOutboxStore } from '../src/store/kvOutboxStore.js';
 class FakeKv {
     constructor() {
         this.map = new Map();
+        this.rejectList = false;
     }
 
     async get(key) {
@@ -19,6 +20,7 @@ class FakeKv {
     }
 
     async list({ prefix = '' } = {}) {
+        if (this.rejectList) throw new Error('KV list() limit exceeded for the day.');
         return {
             keys: [...this.map.keys()]
                 .filter((name) => name.startsWith(prefix))
@@ -71,6 +73,26 @@ async function testListKeepsIndexedItems() {
     assert.equal(listed[0].id, item.id);
 }
 
+async function testListKeepsIndexedItemsWhenListQuotaExceeded() {
+    const kv = new FakeKv();
+    const store = new KvOutboxStore(kv);
+    const inboxId = 'inbox';
+    const item = {
+        id: 'relay_2',
+        requestId: 'round_2',
+        content: '{"t":"text","c":"ok"}',
+        error: null,
+        createdAt: Date.now(),
+    };
+
+    await store.put(inboxId, item);
+    kv.rejectList = true;
+
+    const listed = await store.list(inboxId, 0);
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].id, item.id);
+}
+
 async function testAckDoesNotRewriteIndex() {
     const kv = new FakeKv();
     const store = new KvOutboxStore(kv);
@@ -100,5 +122,6 @@ async function testAckDoesNotRewriteIndex() {
 
 await testListRepairsOrphanedItem();
 await testListKeepsIndexedItems();
+await testListKeepsIndexedItemsWhenListQuotaExceeded();
 await testAckDoesNotRewriteIndex();
 console.log('kvOutboxStore tests passed');
