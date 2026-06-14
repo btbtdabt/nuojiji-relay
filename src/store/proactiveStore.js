@@ -50,6 +50,43 @@ function latestMessageIsUser(messages) {
     return isUserMessage(messages[messages.length - 1]);
 }
 
+function messageSignature(message) {
+    if (!message || typeof message !== 'object') return '';
+    const role = isUserMessage(message) ? 'user' : 'char';
+    const text = String(message.text ?? message.content ?? '');
+    return `${role}\n${text}`;
+}
+
+function latestUserMessageSignature(messages) {
+    if (!Array.isArray(messages)) return '';
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (isUserMessage(messages[i])) return messageSignature(messages[i]);
+    }
+    return '';
+}
+
+function includesMessageSignature(messages, signature) {
+    return !!signature && Array.isArray(messages)
+        && messages.some((message) => messageSignature(message) === signature);
+}
+
+function hasNewLatestUserMessage(prevMessages, nextMessages) {
+    if (!latestMessageIsUser(nextMessages)) return false;
+    const latestNext = nextMessages[nextMessages.length - 1];
+    const nextUserSignature = messageSignature(latestNext);
+    if (!nextUserSignature) return false;
+
+    const prevUserSignature = latestUserMessageSignature(prevMessages);
+    if (nextUserSignature !== prevUserSignature) return true;
+
+    const prevLatestSignature = Array.isArray(prevMessages) && prevMessages.length
+        ? messageSignature(prevMessages[prevMessages.length - 1])
+        : '';
+    return !!prevLatestSignature
+        && !latestMessageIsUser(prevMessages)
+        && includesMessageSignature(nextMessages, prevLatestSignature);
+}
+
 function cloneRecord(record) {
     if (!record || typeof record !== 'object') return {};
     return JSON.parse(JSON.stringify(record));
@@ -135,9 +172,10 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     const incomingInteractionAt = Number(next.lastInteractionAt) || 0;
     const incomingFiredAt = Number(next.lastFiredAt) || 0;
     const prevLastFiredAt = Number(prev.lastFiredAt) || 0;
+    const newLatestUserMessage = hasNewLatestUserMessage(prev.recentMessages, next.recentMessages);
 
     if (next.lifeState !== undefined) {
-        const allowStreakDecrease = !prevLastFiredAt || incomingInteractionAt > prevLastFiredAt;
+        const allowStreakDecrease = newLatestUserMessage || !prevLastFiredAt || incomingInteractionAt > prevLastFiredAt;
         merged.lifeState = mergeLifeState(prev.lifeState, next.lifeState, { allowStreakDecrease });
     }
 
@@ -158,7 +196,8 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     if (next.recentMessages !== undefined
         && prevLastFiredAt
         && incomingInteractionAt <= prevLastFiredAt
-        && !isServerFireWindowPatch) {
+        && !isServerFireWindowPatch
+        && !newLatestUserMessage) {
         merged.recentMessages = prev.recentMessages;
     }
 
@@ -170,8 +209,14 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
         merged.lastFiredAt = maxNumber(prev.lastFiredAt, next.lastFiredAt);
     }
 
-    if (latestMessageIsUser(next.recentMessages)
-        && incomingInteractionAt > (Number(merged.lastFiredAt) || 0)) {
+    if (newLatestUserMessage) {
+        const inferredInteractionAt = incomingInteractionAt > prevLastFiredAt ? incomingInteractionAt : now;
+        merged.lastInteractionAt = Math.max(Number(merged.lastInteractionAt) || 0, inferredInteractionAt);
+    }
+
+    if (newLatestUserMessage
+        || (latestMessageIsUser(next.recentMessages)
+            && incomingInteractionAt > (Number(merged.lastFiredAt) || 0))) {
         const lifeState = (merged.lifeState && typeof merged.lifeState === 'object') ? { ...merged.lifeState } : {};
         lifeState.unansweredStreak = 0;
         merged.lifeState = lifeState;

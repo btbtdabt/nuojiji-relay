@@ -32,9 +32,6 @@ import {
 } from '../agent/agentDebug.js';
 
 export const PROACTIVE_USER_REPLY_GRACE_MS = 60 * 1000;
-const IMAGE_SUBJECT_CODES = new Set(['PERSON_EMOTION', 'PERSON_ACTION', 'SCENE']);
-const PROACTIVE_IMAGE_SCHEMA =
-    '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:PERSON_EMOTION] NovelAI tags in English","loc":"地点","time":"时间"}photo—sub:selfie=角色本人入镜, scene=角色不入镜的食物/物品/风景/环境; d 必须以 [SUBJECT:PERSON_EMOTION] 或 [SUBJECT:PERSON_ACTION] 或 [SUBJECT:SCENE] 开头; SUBJECT 里写代码不要写人名; d 后面写英文 NovelAI/tag prompt, comma-separated, not Chinese prose';
 
 // 把滑窗消息渲染成转录文本（喂进 promptTemplate 的 {{RECENT_MESSAGES}}）
 function renderTranscript(recentMessages) {
@@ -54,52 +51,10 @@ function fillTemplate(template, { transcript, reason, memory }) {
         .replaceAll('{{MEMORY_CONTEXT}}', memory || '');
 }
 
-export function upgradeLegacyImageSchema(systemContent) {
-    let text = String(systemContent || '');
-    text = text.replace(
-        /{"t":"image","d":"描述照片内容","loc":"地点","time":"时间"}photo—d=对话语言简短描述\(如:刚买的蛋糕\/窗外的晚霞\/自拍\)/g,
-        PROACTIVE_IMAGE_SCHEMA
-    );
-    return text.replace(
-        /{"t":"image","sub":"selfie\|scene","d":"\[SUBJECT:XXX\] 描述照片内容","loc":"地点","time":"时间"}photo—sub:selfie=角色本人入镜, scene=角色不入镜的食物\/物品\/风景\/环境; d 必须以 \[SUBJECT:XXX\] 开头/g,
-        PROACTIVE_IMAGE_SCHEMA
-    );
-}
-
-function subjectCodeForImage(obj) {
-    const sub = String(obj?.sub || '').toLowerCase();
-    if (sub === 'scene') return 'SCENE';
-    const d = String(obj?.d || '');
-    return /action|pose|body|full body|upper body|holding|wearing|穿|坐|站|拿|扣|换|做|端|抱/.test(d)
-        ? 'PERSON_ACTION'
-        : 'PERSON_EMOTION';
-}
-
 function commitmentUtcOffsetSeconds(rec) {
     return typeof rec.timeSpec?.userUtcOffsetSeconds === 'number'
         ? rec.timeSpec.userUtcOffsetSeconds
         : (typeof rec.charUtcOffsetSeconds === 'number' ? rec.charUtcOffsetSeconds : null);
-}
-
-export function normalizeProactiveImageContent(content) {
-    return String(content || '').split(/\r?\n/).map((line) => {
-        const trimmed = line.trim();
-        if (!trimmed.includes('"t"') || !trimmed.includes('"image"')) return line;
-        let obj;
-        try { obj = JSON.parse(trimmed); } catch { return line; }
-        if (obj?.t !== 'image' || typeof obj.d !== 'string') return line;
-
-        const fallback = subjectCodeForImage(obj);
-        if (!obj.sub) obj.sub = fallback === 'SCENE' ? 'scene' : 'selfie';
-        obj.d = obj.d.replace(/^\[SUBJECT:([^\]]+)\]\s*/, (_match, subject) => {
-            const code = String(subject || '').trim();
-            return `[SUBJECT:${IMAGE_SUBJECT_CODES.has(code) ? code : fallback}] `;
-        });
-        if (!/^\[SUBJECT:[^\]]+\]/.test(obj.d)) {
-            obj.d = `[SUBJECT:${fallback}] ${obj.d}`;
-        }
-        return JSON.stringify(obj);
-    }).join('\n');
 }
 
 async function clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest = null) {
@@ -214,9 +169,7 @@ export async function runProactiveTick(env) {
                 rec.pendingCommitments,
                 { now, utcOffsetSeconds }
             );
-            const systemContent = upgradeLegacyImageSchema(
-                fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory }) + commitmentContext
-            );
+            const systemContent = fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory }) + commitmentContext;
             // ⚠️ 必须追加一条 user 占位（与 APP 本地路径 useAIRespond.js 的「请开始回复。」对齐）：
             //    只有 system 一条时，OpenAI/Claude 能跑，但走 gemini 反代（OpenAI→Gemini 转译）时
             //    system 会被塞进 systemInstruction、不进 contents，导致 contents 为空 → 代理报
@@ -265,9 +218,7 @@ export async function runProactiveTick(env) {
                 });
             };
             try {
-                content = normalizeProactiveImageContent(
-                    await runGeneration(rec.aiSettings, messages, rec.aiSettings?.maxTokens || null)
-                );
+                content = await runGeneration(rec.aiSettings, messages, rec.aiSettings?.maxTokens || null);
             } catch (e) {
                 error = String(e?.message || e);
             }
@@ -298,6 +249,11 @@ export async function runProactiveTick(env) {
                     discardReason: 'newer_fire_after_generation_started',
                     latestLastFiredAt: Number(latest.lastFiredAt) || 0,
                 });
+                await clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest);
+                continue;
+            }
+            if (error) {
+                await logAttempt('complete', { generated: false, outbox: false });
                 await clearGenerationClaimIfCurrent(proactive, rec, generationClaimId, latest);
                 continue;
             }

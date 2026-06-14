@@ -133,6 +133,56 @@ function testMergeResetsStreakWhenUserReplyWindowOmitsReset() {
     assert.equal(merged.lifeState.unansweredStreak, 0);
 }
 
+function testMergeResetsStreakForNewUserMessageWithStaleTimestamp() {
+    const merged = mergeProactiveRecord({
+        lastInteractionAt: 30_000,
+        lastFiredAt: 30_000,
+        recentMessages: [
+            { sender: 'me', text: 'old user message' },
+            { sender: 'char', text: 'server proactive' },
+        ],
+        lifeState: {
+            unansweredStreak: 1,
+            lastImpulseAt: 30_000,
+            lastProactiveSentAt: 30_000,
+        },
+    }, {
+        lastInteractionAt: 30_000,
+        recentMessages: [
+            { sender: 'me', text: 'old user message' },
+            { sender: 'char', text: 'server proactive' },
+            { sender: 'me', text: 'new user reply after proactive' },
+        ],
+        lifeState: { unansweredStreak: 0 },
+    }, 60_000);
+
+    assert.equal(merged.lastInteractionAt, 60_000);
+    assert.equal(merged.lifeState.unansweredStreak, 0);
+    assert.equal(merged.recentMessages.at(-1).text, 'new user reply after proactive');
+}
+
+function testMergeDoesNotTreatStaleClientWindowAsUserReply() {
+    const prevWindow = [
+        { sender: 'me', text: 'old user message' },
+        { sender: 'char', text: 'server proactive' },
+    ];
+    const staleWindow = [{ sender: 'me', text: 'old user message' }];
+    const merged = mergeProactiveRecord({
+        lastInteractionAt: 30_000,
+        lastFiredAt: 30_000,
+        recentMessages: prevWindow,
+        lifeState: { unansweredStreak: 1 },
+    }, {
+        lastInteractionAt: 30_000,
+        recentMessages: staleWindow,
+        lifeState: { unansweredStreak: 0 },
+    }, 60_000);
+
+    assert.equal(merged.lastInteractionAt, 30_000);
+    assert.equal(merged.lifeState.unansweredStreak, 1);
+    assert.deepEqual(merged.recentMessages, prevWindow);
+}
+
 function testMergeKeepsServerWindowUntilUserReply() {
     const prevWindow = [
         { sender: 'me', text: 'before' },
@@ -718,6 +768,8 @@ testMergeKeepsNewerServerTiming();
 testMergeAcceptsNewerClientTiming();
 testMergeAllowsStreakResetAfterUserReply();
 testMergeResetsStreakWhenUserReplyWindowOmitsReset();
+testMergeResetsStreakForNewUserMessageWithStaleTimestamp();
+testMergeDoesNotTreatStaleClientWindowAsUserReply();
 testMergeKeepsServerWindowUntilUserReply();
 testMergeInitializesNewRecordEnabledAt();
 testMergePendingCommitmentsPreservesExistingRelayItems();
