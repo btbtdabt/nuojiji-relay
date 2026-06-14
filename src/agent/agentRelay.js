@@ -12,6 +12,7 @@ import {
 } from './agentDebug.js';
 
 const RELEVANT_INFO_HEADER = '[Relevant info that could help as context]';
+const COORDINATOR_ERROR_PREFIX = '【coordinator报错】';
 
 function envValue(env, keys, fallback = '') {
     for (const key of keys) {
@@ -103,6 +104,17 @@ function buildCompletionPayload({ id, created, model, content }) {
     };
 }
 
+function coordinatorErrorContent(error) {
+    const message = String(error?.message || error || 'unknown coordinator error')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 500);
+    return JSON.stringify({
+        t: 'text',
+        c: `${COORDINATOR_ERROR_PREFIX}${message ? ` ${message}` : ''}`,
+    });
+}
+
 function streamCompletionPayload({ id, created, model, content }) {
     const chunks = [
         {
@@ -175,6 +187,41 @@ export async function handleAgentChatCompletions(c) {
                     ? 'missing coordinator base url'
                     : 'missing mcp server url',
         };
+    }
+
+    if (coordinatorError) {
+        const finalSettings = buildFinalSettings(c.env, body);
+        const id = makeCompletionId();
+        const created = Math.floor(Date.now() / 1000);
+        const content = coordinatorErrorContent(coordinatorError);
+        const model = finalSettings.mainApiModel || body.model || 'agent-relay';
+        await logAgentEvent(c.env, {
+            type: 'agent_chat',
+            ok: false,
+            stage: 'coordinator',
+            request: summarizeMessages(body.messages),
+            coordinator: coordinatorDebug,
+            coordinator_error: debugError(coordinatorError),
+            final: {
+                model,
+                skipped: true,
+                reason: 'coordinator_error',
+                hasRelevantInfo: false,
+                relevantInfoChars: 0,
+                responseChars: content.length,
+            },
+            ...(debugFull ? {
+                full: {
+                    original_messages: clipDebugValue(body.messages, debugCharLimit),
+                    response: clipDebugValue(content, debugCharLimit),
+                },
+            } : {}),
+            durationMs: Date.now() - startedAt,
+        });
+        if (body.stream === true) {
+            return streamCompletionPayload({ id, created, model, content });
+        }
+        return c.json(buildCompletionPayload({ id, created, model, content }));
     }
 
     const finalSettings = buildFinalSettings(c.env, body);

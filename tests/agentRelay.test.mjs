@@ -14,6 +14,7 @@ import {
     isLikelyNuojijiReply,
     makeGeminiFunctionName,
     prepareGeminiFunctionDeclarations,
+    runOmbreCoordinator,
     sanitizeGeminiSchema,
 } from '../src/agent/geminiCoordinator.js';
 import {
@@ -288,6 +289,177 @@ async function testAgentStreamUsesSeparateStopChunk() {
     }
 }
 
+async function testCoordinatorRetriesTransientGeminiFailures() {
+    const originalFetch = globalThis.fetch;
+    let geminiCalls = 0;
+    globalThis.fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (body.method === 'initialize') {
+            return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+                status: 200,
+                headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
+            });
+        }
+        if (body.method === 'notifications/initialized') {
+            return new Response('', { status: 202 });
+        }
+        if (body.method === 'tools/list') {
+            return new Response(JSON.stringify({
+                jsonrpc: '2.0',
+                id: body.id,
+                result: {
+                    tools: [{
+                        name: 'breath',
+                        description: 'Read memory.',
+                        inputSchema: { type: 'object', properties: {} },
+                    }],
+                },
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        throw new Error(`unexpected MCP method ${body.method}`);
+    };
+
+    const geminiFetch = async () => {
+        geminiCalls++;
+        if (geminiCalls < 3) {
+            return new Response(JSON.stringify({
+                error: { code: 503, message: 'temporary unavailable', status: 'UNAVAILABLE' },
+            }), {
+                status: 503,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        return new Response(JSON.stringify({
+            candidates: [{
+                content: {
+                    role: 'model',
+                    parts: [{ text: 'NO_RELEVANT_INFO' }],
+                },
+            }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const result = await runOmbreCoordinator({
+            messages: [{ role: 'user', content: 'hello' }],
+            mcpServer: { url: 'https://brain.example.com/mcp', auth: { type: 'none' } },
+            apiKey: 'coordinator-key',
+            baseUrl: 'https://gateway.example.com/v1beta',
+            model: 'gemini-3.5-flash',
+            fetchImpl: geminiFetch,
+            timeoutMs: 1000,
+        });
+
+        assert.equal(geminiCalls, 3);
+        assert.equal(result.relevantInfo, '');
+        assert.equal(result.debug.rounds, 1);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testCoordinatorFailureSkipsFinalModel() {
+    const app = createApp();
+    const env = {
+        OUTBOX: new FakeKv(),
+        RELAY_SECRET: 'test-secret',
+        AGENT_MCP_URL: 'https://brain.example.com/mcp',
+        AGENT_COORDINATOR_API_KEY: 'coordinator-key',
+        AGENT_COORDINATOR_BASE_URL: 'https://gateway.example.com/v1beta',
+        AGENT_COORDINATOR_MODEL: 'gemini-3.5-flash',
+        AGENT_FINAL_API_URL: 'https://api.openai.example',
+        AGENT_FINAL_API_KEY: 'final-key',
+        AGENT_FINAL_MODEL: 'test-final-model',
+    };
+    const originalFetch = globalThis.fetch;
+    let finalCalls = 0;
+    let geminiCalls = 0;
+
+    globalThis.fetch = async (url, init) => {
+        const textUrl = String(url);
+        if (textUrl.includes('brain.example.com')) {
+            const body = JSON.parse(String(init?.body || '{}'));
+            if (body.method === 'initialize') {
+                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
+                });
+            }
+            if (body.method === 'notifications/initialized') {
+                return new Response('', { status: 202 });
+            }
+            if (body.method === 'tools/list') {
+                return new Response(JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: body.id,
+                    result: {
+                        tools: [{
+                            name: 'breath',
+                            description: 'Read memory.',
+                            inputSchema: { type: 'object', properties: {} },
+                        }],
+                    },
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+        }
+        if (textUrl.includes('gateway.example.com')) {
+            geminiCalls++;
+            return new Response(JSON.stringify({
+                error: { code: 503, message: 'temporary unavailable', status: 'UNAVAILABLE' },
+            }), {
+                status: 503,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        if (textUrl.includes('api.openai.example')) {
+            finalCalls++;
+            return new Response(JSON.stringify({
+                choices: [{ message: { content: 'should not happen' } }],
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        throw new Error(`unexpected fetch ${textUrl}`);
+    };
+
+    try {
+        const res = await app.fetch(new Request('https://relay.example/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer test-secret',
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                messages: [{ role: 'user', content: 'hi' }],
+            }),
+        }), env);
+
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content || '';
+        assert.match(content, /coordinator报错/);
+        assert.equal(geminiCalls, 3);
+        assert.equal(finalCalls, 0);
+
+        const events = await listAgentEvents(env, { limit: 3 });
+        assert.equal(events[0].stage, 'coordinator');
+        assert.equal(events[0].ok, false);
+        assert.equal(events[0].final.skipped, true);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 function testSummarizeAiSettingsMasksKeys() {
     const summary = summarizeAiSettings({
         mainApiUrl: 'https://relay.example/v1',
@@ -334,6 +506,8 @@ testCoordinatorQueryHintPrefersRealUserText();
 testNuojijiReplyDetector();
 testGeminiFunctionResponseUsesUserRole();
 await testAgentStreamUsesSeparateStopChunk();
+await testCoordinatorRetriesTransientGeminiFailures();
+await testCoordinatorFailureSkipsFinalModel();
 await testDebugEventStore();
 testSummarizeAiSettingsMasksKeys();
 testFullDebugHelpers();

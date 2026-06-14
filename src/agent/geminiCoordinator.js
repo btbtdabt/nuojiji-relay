@@ -7,6 +7,8 @@ const DEFAULT_COORDINATOR_BASE_URL = '';
 const DEFAULT_COORDINATOR_MODEL = 'gemini-3.5-flash';
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
+const DEFAULT_GEMINI_RETRY_ATTEMPTS = 2;
+const RETRYABLE_GEMINI_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 function isPlainObject(value) {
     return value && typeof value === 'object' && !Array.isArray(value);
@@ -337,7 +339,15 @@ function buildGeminiEndpoint(baseUrl = DEFAULT_COORDINATOR_BASE_URL, model = DEF
     return `${base}/${modelPath}:generateContent`;
 }
 
-async function callGeminiGenerateContent({
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isRetryableGeminiError(error) {
+    if (error?.retryable) return true;
+    const status = Number(error?.status) || 0;
+    return RETRYABLE_GEMINI_STATUSES.has(status);
+}
+
+async function callGeminiGenerateContentOnce({
     apiKey,
     baseUrl,
     authType = 'bearer',
@@ -384,7 +394,9 @@ async function callGeminiGenerateContent({
             signal: controller.signal,
         });
     } catch (error) {
-        throw new Error(`Gemini coordinator network error: ${error?.message || error}`);
+        const wrapped = new Error(`Gemini coordinator network error: ${error?.message || error}`);
+        wrapped.retryable = true;
+        throw wrapped;
     } finally {
         clearTimeout(timer);
     }
@@ -394,13 +406,30 @@ async function callGeminiGenerateContent({
     try { data = JSON.parse(rawText); } catch { data = { rawText }; }
     if (!response.ok) {
         const detail = typeof rawText === 'string' ? rawText.slice(0, 800) : JSON.stringify(data).slice(0, 800);
-        throw new Error(`Gemini coordinator HTTP ${response.status}: ${detail}`);
+        const error = new Error(`Gemini coordinator HTTP ${response.status}: ${detail}`);
+        error.status = response.status;
+        throw error;
     }
     const candidate = data?.candidates?.[0];
     if (!candidate?.content?.parts) {
         throw new Error(`Gemini coordinator returned no candidate content: ${JSON.stringify(data).slice(0, 500)}`);
     }
     return candidate;
+}
+
+async function callGeminiGenerateContent(options) {
+    const retryAttempts = Math.max(0, Math.min(5, Number(options.retryAttempts ?? DEFAULT_GEMINI_RETRY_ATTEMPTS) || 0));
+    let lastError = null;
+    for (let attempt = 0; attempt <= retryAttempts; attempt++) {
+        if (attempt > 0) await sleep(Math.min(1000 * 2 ** (attempt - 1), 5000));
+        try {
+            return await callGeminiGenerateContentOnce(options);
+        } catch (error) {
+            lastError = error;
+            if (attempt >= retryAttempts || !isRetryableGeminiError(error)) break;
+        }
+    }
+    throw lastError;
 }
 
 function extractFunctionCalls(content) {
@@ -444,6 +473,7 @@ export async function runOmbreCoordinator({
     model = DEFAULT_COORDINATOR_MODEL,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     maxToolRounds = DEFAULT_MAX_TOOL_ROUNDS,
+    geminiRetryAttempts = DEFAULT_GEMINI_RETRY_ATTEMPTS,
     debugFull = false,
     debugCharLimit = 200_000,
     fetchImpl,
@@ -493,6 +523,7 @@ export async function runOmbreCoordinator({
             contents,
             functionDeclarations,
             timeoutMs,
+            retryAttempts: geminiRetryAttempts,
             fetchImpl,
         });
 
