@@ -142,7 +142,14 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     }
 
     if (next.pendingCommitments !== undefined) {
-        merged.pendingCommitments = mergePendingCommitments([], next.pendingCommitments, { now });
+        const utcOffsetSeconds = typeof next.timeSpec?.userUtcOffsetSeconds === 'number'
+            ? next.timeSpec.userUtcOffsetSeconds
+            : (typeof next.charUtcOffsetSeconds === 'number'
+                ? next.charUtcOffsetSeconds
+                : (typeof prev.timeSpec?.userUtcOffsetSeconds === 'number'
+                    ? prev.timeSpec.userUtcOffsetSeconds
+                    : (typeof prev.charUtcOffsetSeconds === 'number' ? prev.charUtcOffsetSeconds : null)));
+        merged.pendingCommitments = mergePendingCommitments(prev.pendingCommitments, next.pendingCommitments, { now, utcOffsetSeconds });
     }
 
     const isServerFireWindowPatch = incomingFiredAt > 0

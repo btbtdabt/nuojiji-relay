@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+    mergePendingCommitments,
     normalizeCommitment,
     parseCommitmentsFromContent,
     pendingCommitmentBlockReason,
@@ -34,6 +35,45 @@ function testStoredDueAtDoesNotSlideForward() {
     assert.equal(pendingCommitmentBlockReason([stored], later), '');
 }
 
+function testMergeKeepsSoonestCommitmentsWhenCapped() {
+    const now = 1_000_000;
+    const incoming = Array.from({ length: 25 }, (_, index) => {
+        const minute = index + 1;
+        return {
+            t: 'commitment',
+            kind: 'promise',
+            at: `+${minute}min`,
+            hint: `promise ${minute}`,
+            createdAt: now + minute,
+        };
+    });
+
+    const merged = mergePendingCommitments([], incoming, { now });
+
+    assert.equal(merged.length, 20);
+    assert.equal(merged[0].hint, 'promise 1');
+    assert.equal(merged[19].hint, 'promise 20');
+}
+
+function testClockCommitmentsUseProvidedTimezoneForBlocking() {
+    const now = Date.UTC(2026, 5, 14, 1, 30, 0, 0);
+    const commitment = {
+        t: 'commitment',
+        kind: 'promise',
+        at: '22:00',
+        hint: '晚点回来',
+        createdAt: now,
+    };
+
+    assert.equal(
+        pendingCommitmentBlockReason([commitment], { now, utcOffsetSeconds: -4 * 60 * 60 }),
+        'pending_promise_commitment_due_in_30m'
+    );
+    assert.equal(pendingCommitmentBlockReason([commitment], { now, utcOffsetSeconds: 0 }), '');
+}
+
 testParsesRelativeCommitment();
 testStoredDueAtDoesNotSlideForward();
+testMergeKeepsSoonestCommitmentsWhenCapped();
+testClockCommitmentsUseProvidedTimezoneForBlocking();
 console.log('commitments tests passed');

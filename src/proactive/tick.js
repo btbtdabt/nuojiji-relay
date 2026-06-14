@@ -75,6 +75,12 @@ function subjectCodeForImage(obj) {
         : 'PERSON_EMOTION';
 }
 
+function commitmentUtcOffsetSeconds(rec) {
+    return typeof rec.timeSpec?.userUtcOffsetSeconds === 'number'
+        ? rec.timeSpec.userUtcOffsetSeconds
+        : (typeof rec.charUtcOffsetSeconds === 'number' ? rec.charUtcOffsetSeconds : null);
+}
+
 export function normalizeProactiveImageContent(content) {
     return String(content || '').split(/\r?\n/).map((line) => {
         const trimmed = line.trim();
@@ -136,7 +142,11 @@ export async function runProactiveTick(env) {
             if (activeGenerationStartedAt && (now - activeGenerationStartedAt) < PROACTIVE_GENERATION_CLAIM_TTL_MS) continue;
             const lastInteractionAt = Number(rec.lastInteractionAt) || 0;
             if (lastInteractionAt && (now - lastInteractionAt) < PROACTIVE_USER_REPLY_GRACE_MS) continue;
-            const commitmentBlockReason = pendingCommitmentBlockReason(rec.pendingCommitments, now);
+            const utcOffsetSeconds = commitmentUtcOffsetSeconds(rec);
+            const commitmentBlockReason = pendingCommitmentBlockReason(
+                rec.pendingCommitments,
+                { now, utcOffsetSeconds }
+            );
             if (commitmentBlockReason) continue;
 
             // 两种触发档：'impulse'(真人模式) / 'interval'(普通后台主动，计时+概率高中低)
@@ -200,7 +210,10 @@ export async function runProactiveTick(env) {
             }
             // 先填即时真时间哨兵（§NOW_*§），再填滑窗/理由/记忆占位符。
             const timedTemplate = renderTimeTokens(rec.promptTemplate, rec.timeSpec, now, rec.lastInteractionAt || 0);
-            const commitmentContext = formatPendingCommitmentsForPrompt(rec.pendingCommitments, now);
+            const commitmentContext = formatPendingCommitmentsForPrompt(
+                rec.pendingCommitments,
+                { now, utcOffsetSeconds }
+            );
             const systemContent = upgradeLegacyImageSchema(
                 fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory }) + commitmentContext
             );
@@ -258,9 +271,6 @@ export async function runProactiveTick(env) {
             } catch (e) {
                 error = String(e?.message || e);
             }
-            const utcOffsetSeconds = typeof rec.timeSpec?.userUtcOffsetSeconds === 'number'
-                ? rec.timeSpec.userUtcOffsetSeconds
-                : (typeof rec.charUtcOffsetSeconds === 'number' ? rec.charUtcOffsetSeconds : null);
             const outputCommitments = !error
                 ? parseCommitmentsFromContent(content, { now, utcOffsetSeconds })
                 : [];

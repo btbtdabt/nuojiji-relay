@@ -190,6 +190,31 @@ function testMergeInitializesNewRecordEnabledAt() {
     assert.equal(merged.updatedAt, 70_000);
 }
 
+function testMergePendingCommitmentsPreservesExistingRelayItems() {
+    const now = 90_000;
+    const merged = mergeProactiveRecord({
+        pendingCommitments: [{
+            t: 'commitment',
+            kind: 'activity',
+            at: '+5min',
+            hint: '换衣服',
+            dueAt: now + 5 * 60_000,
+            createdAt: now,
+        }],
+    }, {
+        pendingCommitments: [{
+            t: 'commitment',
+            kind: 'promise',
+            at: '+2h',
+            hint: '晚点发照片',
+            createdAt: now + 1,
+        }],
+    }, now);
+
+    assert.equal(merged.pendingCommitments.length, 2);
+    assert.deepEqual(merged.pendingCommitments.map((item) => item.hint), ['换衣服', '晚点发照片']);
+}
+
 async function testPatchKeepsNewerServerTiming() {
     const store = new MemoryProactiveStore();
     await store.upsert({
@@ -695,6 +720,7 @@ testMergeAllowsStreakResetAfterUserReply();
 testMergeResetsStreakWhenUserReplyWindowOmitsReset();
 testMergeKeepsServerWindowUntilUserReply();
 testMergeInitializesNewRecordEnabledAt();
+testMergePendingCommitmentsPreservesExistingRelayItems();
 await testPatchKeepsNewerServerTiming();
 await testPatchAcceptsServerWindowAtFireTimestamp();
 await testKvListUsesFireAtMirror();

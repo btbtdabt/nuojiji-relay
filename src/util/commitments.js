@@ -110,12 +110,21 @@ export function mergePendingCommitments(existing, incoming, { now = Date.now(), 
     for (const item of Array.isArray(incoming) ? incoming : []) add(item);
     return [...map.values()]
         .sort((a, b) => (Number(a.dueAt) || Number.MAX_SAFE_INTEGER) - (Number(b.dueAt) || Number.MAX_SAFE_INTEGER))
-        .slice(-MAX_PENDING_COMMITMENTS);
+        .slice(0, MAX_PENDING_COMMITMENTS);
 }
 
-export function pendingCommitmentBlockReason(pendingCommitments, now = Date.now()) {
+function commitmentTimingOptions(options) {
+    if (typeof options === 'number') return { now: options, utcOffsetSeconds: null };
+    return {
+        now: options?.now ?? Date.now(),
+        utcOffsetSeconds: options?.utcOffsetSeconds ?? null,
+    };
+}
+
+export function pendingCommitmentBlockReason(pendingCommitments, options = {}) {
+    const { now, utcOffsetSeconds } = commitmentTimingOptions(options);
     for (const item of Array.isArray(pendingCommitments) ? pendingCommitments : []) {
-        const commitment = normalizeCommitment(item, { now });
+        const commitment = normalizeCommitment(item, { now, utcOffsetSeconds });
         if (!commitment?.dueAt || commitment.dueAt <= now) continue;
         const remainingMs = commitment.dueAt - now;
         if (commitment.kind === 'activity' || commitment.kind === 'callback') {
@@ -128,10 +137,11 @@ export function pendingCommitmentBlockReason(pendingCommitments, now = Date.now(
     return '';
 }
 
-export function formatPendingCommitmentsForPrompt(pendingCommitments, now = Date.now()) {
+export function formatPendingCommitmentsForPrompt(pendingCommitments, options = {}) {
+    const { now, utcOffsetSeconds } = commitmentTimingOptions(options);
     const lines = [];
     for (const item of Array.isArray(pendingCommitments) ? pendingCommitments : []) {
-        const commitment = normalizeCommitment(item, { now });
+        const commitment = normalizeCommitment(item, { now, utcOffsetSeconds });
         if (!commitment?.dueAt || commitment.dueAt <= now) continue;
         const remainingMin = Math.max(1, Math.ceil((commitment.dueAt - now) / 60_000));
         lines.push(`- ${commitment.kind} due in ~${remainingMin}min — ${commitment.hint || commitment.at}`);
