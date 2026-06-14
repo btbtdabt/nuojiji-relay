@@ -159,6 +159,35 @@ async function testProactiveSyncDebugRecordsLatestUserMessage() {
     assert.equal(syncDebug.lastInteractionAt, 20_000);
 }
 
+async function testPushDiagDebugRecordsMaskedSubscriptions() {
+    const app = createApp();
+    const kv = new FakeKv();
+
+    const subscribe = await postJson(app, kv, '/api/push/subscribe', {
+        inboxId: 'inbox',
+        subscription: { channel: 'apns', token: 'secret-token-f21a4f' },
+    });
+    assert.equal(subscribe.status, 200);
+
+    const diag = await postJson(app, kv, '/api/push/diag', {
+        inboxId: 'inbox',
+        test: true,
+    });
+    assert.equal(diag.status, 200);
+    const payload = await diag.json();
+    assert.equal(payload.count, 1);
+    assert.deepEqual(payload.channels, [{ channel: 'apns', idTail: '…f21a4f' }]);
+    assert.equal(payload.dispatch[0].ok, null);
+
+    const diagDebug = (await debugEvents(kv)).find((event) => event.type === 'push_diag');
+    assert.ok(diagDebug);
+    assert.equal(diagDebug.ok, true);
+    assert.equal(diagDebug.count, 1);
+    assert.deepEqual(diagDebug.channels, [{ channel: 'apns', idTail: '…f21a4f' }]);
+    assert.doesNotMatch(JSON.stringify(diagDebug), /secret-token/);
+}
+
 await testOutboxDebugShowsItemsHiddenBySince();
 await testProactiveSyncDebugRecordsLatestUserMessage();
+await testPushDiagDebugRecordsMaskedSubscriptions();
 console.log('deliveryDebug tests passed');

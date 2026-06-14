@@ -49,7 +49,8 @@ export class KvOutboxStore {
         const out = [];
         let cursor;
         do {
-            const page = await this.kv.list({ prefix, cursor });
+            const options = cursor ? { prefix, cursor } : { prefix };
+            const page = await this.kv.list(options);
             for (const key of page.keys || []) {
                 const raw = await this.kv.get(key.name);
                 if (!raw) continue;

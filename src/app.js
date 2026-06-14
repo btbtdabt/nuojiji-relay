@@ -500,61 +500,86 @@ export function createApp() {
 
     // 🩺 推送链路自检（设置页「检查推送」按钮调）：
     //   - 列出本 inbox 当前注册了哪些推送订阅通道（web/apns/fcm），不回 token 全文（脱敏）。
-    //   - test:true 时对每条订阅真发一条测试推送，回每条的投递结果（含中转/APNs 的 reason）。
-    //   一眼能看出：没有 apns 订阅 = 客户端没注册成功；有订阅但 dispatch 失败 = 中转/凭据问题。
+    //   - test:true 不再真发测试推送，只返回订阅清单和头像状态，避免自检通知轰炸。
+    //   一眼能看出：没有 apns 订阅 = 客户端没注册成功；有订阅但后续 relay_push 失败 = 中转/凭据问题。
     app.post('/api/push/diag', async (c) => {
-        let body;
-        try { body = await c.req.json(); } catch { body = {}; }
-        const { inboxId, test } = body || {};
-        if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
-        const { sub } = await getStores(c.env);
-        const subs = await sub.list(inboxId);
-        const mask = (s) => {
-            const t = s?.token || s?.sub?.token || s?.sub?.endpoint || '';
-            const tail = String(t).slice(-6);
-            return { channel: s?.channel || 'web', idTail: tail ? `…${tail}` : null };
-        };
-        const channels = subs.map(mask);
-        const result = { inboxId, count: subs.length, channels };
-
-        // 🔬 头像链路诊断：查这个 inbox 注册过的 pair 里有没有存 avatarUrl，
-        //    以及该 URL 指向的头像在 KV 里是否真的存在（避免「上传失败/过期」却不自知）。
+        const startedAt = Date.now();
+        let inboxId = null;
         try {
-            const { proactive } = await getStores(c.env);
-            const recs = (proactive?.listByInbox ? await proactive.listByInbox(inboxId) : []) || [];
-            const kv = c.env?.OUTBOX;
-            result.avatars = [];
-            for (const r of recs) {
-                const url = r?.avatarUrl || null;
-                let stored = null;
-                if (url && kv) {
-                    const m = String(url).match(/\/avatar\/([\w.-]+)$/);
-                    if (m) {
-                        const raw = await kv.get(`av:${m[1]}`).catch(() => null);
-                        stored = raw ? `present(${raw.length}b)` : 'MISSING-in-KV';
-                    } else stored = 'unparseable-url';
-                }
-                result.avatars.push({
-                    charId: r?.charId ?? null, charName: r?.timeSpec?.charName ?? null,
-                    avatarUrl: url, kvStatus: url ? stored : 'NO-avatarUrl-registered',
-                });
-            }
-        } catch (e) {
-            result.avatarsError = String(e?.message || e);
-        }
+            let body;
+            try { body = await c.req.json(); } catch { body = {}; }
+            const { test } = body || {};
+            inboxId = body?.inboxId || null;
+            if (!inboxId) return c.json({ error: 'inboxId required' }, 400);
+            const { sub } = await getStores(c.env);
+            const subs = await sub.list(inboxId);
+            const mask = (s) => {
+                const t = s?.token || s?.sub?.token || s?.sub?.endpoint || '';
+                const tail = String(t).slice(-6);
+                return { channel: s?.channel || 'web', idTail: tail ? `…${tail}` : null };
+            };
+            const channels = subs.map(mask);
+            const result = { inboxId, count: subs.length, channels };
 
-        // ⚠️ test:true「真发测试推送」已停用。
-        //    现象：有客户端(疑似旧版本/后台保活循环)每 5~10 分钟反复调本端点 test:true，
-        //    每次对每条订阅各发一条「推送链路自检(带头像)」→ 用户被自检通知轰炸。
-        //    诊断本身只需「查订阅是否存在 + 头像 KV 是否在」，不必真发通知。
-        //    故无条件不再 dispatch，只回订阅清单 + 头像状态；UI 拿不到 dispatch 时显示「已停用真发」。
-        if (test && subs.length) {
-            result.dispatch = subs.map((s) => ({
-                channel: s?.channel || 'web', ok: null, gone: false,
-                reason: '测试推送已停用(防自检通知轰炸)，本项仅列出订阅是否存在',
-            }));
+            // 🔬 头像链路诊断：查这个 inbox 注册过的 pair 里有没有存 avatarUrl，
+            //    以及该 URL 指向的头像在 KV 里是否真的存在（避免「上传失败/过期」却不自知）。
+            try {
+                const { proactive } = await getStores(c.env);
+                const recs = (proactive?.listByInbox ? await proactive.listByInbox(inboxId) : []) || [];
+                const kv = c.env?.OUTBOX;
+                result.avatars = [];
+                for (const r of recs) {
+                    const url = r?.avatarUrl || null;
+                    let stored = null;
+                    if (url && kv) {
+                        const m = String(url).match(/\/avatar\/([\w.-]+)$/);
+                        if (m) {
+                            const raw = await kv.get(`av:${m[1]}`).catch(() => null);
+                            stored = raw ? `present(${raw.length}b)` : 'MISSING-in-KV';
+                        } else stored = 'unparseable-url';
+                    }
+                    result.avatars.push({
+                        charId: r?.charId ?? null, charName: r?.timeSpec?.charName ?? null,
+                        avatarUrl: url, kvStatus: url ? stored : 'NO-avatarUrl-registered',
+                    });
+                }
+            } catch (e) {
+                result.avatarsError = String(e?.message || e);
+            }
+
+            // ⚠️ test:true「真发测试推送」已停用。
+            //    现象：有客户端(疑似旧版本/后台保活循环)每 5~10 分钟反复调本端点 test:true，
+            //    每次对每条订阅各发一条「推送链路自检(带头像)」→ 用户被自检通知轰炸。
+            //    诊断本身只需「查订阅是否存在 + 头像 KV 是否在」，不必真发通知。
+            //    故无条件不再 dispatch，只回订阅清单 + 头像状态；UI 拿不到 dispatch 时显示「已停用真发」。
+            if (test && subs.length) {
+                result.dispatch = subs.map((s) => ({
+                    channel: s?.channel || 'web', ok: null, gone: false,
+                    reason: '测试推送已停用(防自检通知轰炸)，本项仅列出订阅是否存在',
+                }));
+            }
+            await logAgentEvent(c.env, {
+                type: 'push_diag',
+                ok: true,
+                inboxId,
+                count: subs.length,
+                channels,
+                avatarCount: Array.isArray(result.avatars) ? result.avatars.length : 0,
+                avatarsError: result.avatarsError || '',
+                dispatchCount: Array.isArray(result.dispatch) ? result.dispatch.length : 0,
+                durationMs: Date.now() - startedAt,
+            });
+            return c.json(result);
+        } catch (e) {
+            await logAgentEvent(c.env, {
+                type: 'push_diag',
+                ok: false,
+                inboxId,
+                error: debugError(e),
+                durationMs: Date.now() - startedAt,
+            });
+            return c.json({ error: 'push diag failed', detail: String(e?.message || e) }, 500);
         }
-        return c.json(result);
     });
 
     // 🖼️ 写入角色头像（鉴权）：客户端注册 proactive 时上传角色头像 base64，存 KV 供推送/扩展使用。

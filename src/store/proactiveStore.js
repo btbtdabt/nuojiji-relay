@@ -364,7 +364,8 @@ export class KvProactiveStore {
         const out = [];
         let cursor;
         do {
-            const res = await this.kv.list({ prefix: 'p:', cursor });
+            const options = cursor ? { prefix: 'p:', cursor } : { prefix: 'p:' };
+            const res = await this.kv.list(options);
             for (const key of res.keys || []) {
                 const name = String(key.name || '');
                 if (name.startsWith('p:')) out.push(name.slice(2));

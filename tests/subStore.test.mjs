@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { createSubStore, subKey } from '../src/store/subStore.js';
 
 class FakeKv {
-    constructor({ hideList = false } = {}) {
+    constructor({ hideList = false, rejectUndefinedCursor = false } = {}) {
         this.map = new Map();
         this.putCalls = [];
         this.deleteCalls = [];
         this.hideList = hideList;
+        this.rejectUndefinedCursor = rejectUndefinedCursor;
     }
 
     async get(key) {
@@ -23,7 +24,11 @@ class FakeKv {
         this.map.delete(key);
     }
 
-    async list({ prefix = '' } = {}) {
+    async list(options = {}) {
+        if (this.rejectUndefinedCursor && Object.hasOwn(options, 'cursor') && options.cursor === undefined) {
+            throw new Error('cursor must be omitted when empty');
+        }
+        const { prefix = '' } = options;
         if (this.hideList) return { keys: [], list_complete: true };
         return {
             keys: [...this.map.keys()]
@@ -94,6 +99,16 @@ async function testKvSubscriptionListRepairsLegacyPrefixRows() {
     assert.deepEqual(JSON.parse(await kv.get('sidx:inbox')), ['legacy-token']);
 }
 
+async function testKvSubscriptionLegacyRepairOmitsEmptyCursor() {
+    const kv = new FakeKv({ rejectUndefinedCursor: true });
+    const store = await createSubStore({ OUTBOX: kv });
+    const legacy = { channel: 'apns', token: 'legacy-token' };
+
+    await kv.put('s:inbox:legacy-token', JSON.stringify(legacy));
+
+    assert.deepEqual(await store.list('inbox'), [legacy]);
+}
+
 function testSubKeyReadsNestedTokens() {
     assert.equal(subKey({ channel: 'apns', sub: { token: 'nested-token' } }), 'nested-token');
 }
@@ -102,5 +117,6 @@ await testKvSubscriptionListUsesStrongIndex();
 await testKvSubscriptionRemoveUpdatesIndex();
 await testKvSubscriptionPruneUpdatesIndex();
 await testKvSubscriptionListRepairsLegacyPrefixRows();
+await testKvSubscriptionLegacyRepairOmitsEmptyCursor();
 testSubKeyReadsNestedTokens();
 console.log('subStore tests passed');

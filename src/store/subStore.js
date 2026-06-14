@@ -48,7 +48,8 @@ class KvSubStore {
         let cursor;
         const prefix = `s:${inboxId}:`;
         do {
-            const res = await this.kv.list({ prefix, cursor });
+            const options = cursor ? { prefix, cursor } : { prefix };
+            const res = await this.kv.list(options);
             for (const k of res.keys || []) {
                 const raw = await this.kv.get(k.name);
                 if (!raw) continue;
