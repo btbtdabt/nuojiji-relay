@@ -5,7 +5,7 @@ import { clipDebugValue } from './agentDebug.js';
 
 const DEFAULT_COORDINATOR_BASE_URL = '';
 const DEFAULT_COORDINATOR_MODEL = 'gemini-3.5-flash';
-const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 
 function isPlainObject(value) {

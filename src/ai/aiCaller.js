@@ -4,7 +4,7 @@
 import { getApiConfig } from './apiConfigs.js';
 import { buildChatEndpoint, buildApiHeaders, buildChatRequestBody, assertSafeApiUrl } from './requestBuilder.js';
 
-const REQUEST_TIMEOUT_MS = 180_000;
+const REQUEST_TIMEOUT_MS = 600_000;
 
 async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature, reasoningEffort, maxTokens, extraHeaders }) {
     assertSafeApiUrl(apiUrl);
