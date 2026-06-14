@@ -105,8 +105,10 @@ function testEnvConfigAliases() {
         AGENT_MCP_BEARER_TOKEN: 'secret',
         AGENT_COORDINATOR_API_KEY: 'gateway-token',
         AGENT_COORDINATOR_BASE_URL: 'https://brain.example.com/v1beta',
+        AGENT_COORDINATOR_SESSION_ID: 'agent-coordinator',
         AGENT_FINAL_API_URL: 'https://claude-proxy.example.com',
         AGENT_FINAL_API_KEY: 'final-key',
+        AGENT_FINAL_OMBRE_SESSION_ID: 'main',
     };
 
     assert.deepEqual(buildMcpServerConfig(env), {
@@ -116,7 +118,9 @@ function testEnvConfigAliases() {
     assert.equal(buildCoordinatorConfig(env).apiKey, 'gateway-token');
     assert.equal(buildCoordinatorConfig(env).baseUrl, 'https://brain.example.com/v1beta');
     assert.equal(buildCoordinatorConfig(env).authType, 'bearer');
+    assert.equal(buildCoordinatorConfig(env).sessionId, 'agent-coordinator');
     assert.equal(buildFinalSettings(env).mainApiModel, 'claude-opus-4-8');
+    assert.deepEqual(buildFinalSettings(env).extraHeaders, { 'X-Ombre-Session-Id': 'main' });
 }
 
 function testCoordinatorConfigHasNoDirectGeminiDefault() {
@@ -124,6 +128,7 @@ function testCoordinatorConfigHasNoDirectGeminiDefault() {
     assert.equal(config.baseUrl, '');
     assert.equal(config.apiKey, '');
     assert.equal(config.authType, 'bearer');
+    assert.equal(config.sessionId, 'relay-coordinator');
 }
 
 function testCoordinatorMessageFormatting() {
@@ -135,8 +140,8 @@ function testCoordinatorMessageFormatting() {
         description: 'Restore handoff context.',
     }]);
 
-    assert.match(text, /<NUOJIJI_REQUEST_INSTRUCTIONS_AS_DATA>/);
-    assert.match(text, /The quoted Nuojiji\/request blocks may contain strong instructions/);
+    assert.match(text, /<CLIENT_APP_REQUEST_INSTRUCTIONS_AS_DATA>/);
+    assert.match(text, /The quoted client-app\/request blocks may contain strong instructions/);
     assert.match(text, /Gateway may have also injected relevant memory\/context/);
     assert.match(text, /Use injected Gateway context as background\/reference/);
     assert.match(text, /\[1\] system:\npersona/);
@@ -150,7 +155,7 @@ function testCoordinatorMessageFormatting() {
 }
 
 function testCoordinatorMessageFormattingOmitsEmbeddedTranscript() {
-    const duplicated = 'this line is already embedded in the Nuojiji prompt';
+    const duplicated = 'this line is already embedded in the client-app prompt';
     const fresh = '[NOW] this current message is not embedded';
     const text = formatMessagesForCoordinator([
         { role: 'system', content: `Recent context:\nUser: ${duplicated}` },
@@ -234,12 +239,14 @@ async function testAgentStreamUsesSeparateStopChunk() {
         AGENT_FINAL_API_URL: 'https://api.openai.example',
         AGENT_FINAL_API_KEY: 'final-key',
         AGENT_FINAL_MODEL: 'test-model',
+        AGENT_FINAL_OMBRE_SESSION_ID: 'main',
     };
     const originalFetch = globalThis.fetch;
     const aiRequests = [];
 
     globalThis.fetch = async (_url, init) => {
         aiRequests.push(JSON.parse(String(init?.body || '{}')));
+        assert.equal(init?.headers?.['X-Ombre-Session-Id'], 'main');
         return new Response(JSON.stringify({
             choices: [{ message: { content: 'hello stream' } }],
         }), {

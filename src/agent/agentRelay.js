@@ -48,17 +48,20 @@ export function buildCoordinatorConfig(env) {
         baseUrl: envValue(env, ['AGENT_COORDINATOR_BASE_URL', 'AGENT_GATEWAY_BASE_URL', 'OMBRE_GATEWAY_BASE_URL'], ''),
         authType: envValue(env, ['AGENT_COORDINATOR_AUTH_TYPE'], 'bearer'),
         model: envValue(env, ['AGENT_COORDINATOR_MODEL'], 'gemini-3.5-flash'),
+        sessionId: envValue(env, ['AGENT_COORDINATOR_SESSION_ID'], 'relay-coordinator'),
         timeoutMs: envNumber(env, ['AGENT_COORDINATOR_TIMEOUT_MS'], 180_000),
         maxToolRounds: Math.max(1, Math.min(32, envNumber(env, ['AGENT_MAX_TOOL_ROUNDS'], 8))),
     };
 }
 
 export function buildFinalSettings(env, body = {}) {
+    const finalSessionId = envValue(env, ['AGENT_FINAL_OMBRE_SESSION_ID', 'AGENT_FINAL_SESSION_ID'], '');
     return {
         mainApiUrl: envValue(env, ['AGENT_FINAL_API_URL', 'AGENT_FINAL_BASE_URL', 'CLAUDE_PROXY_BASE_URL'], ''),
         mainApiKey: envValue(env, ['AGENT_FINAL_API_KEY', 'CLAUDE_PROXY_API_KEY'], ''),
         mainApiModel: envValue(env, ['AGENT_FINAL_MODEL', 'CLAUDE_PROXY_MODEL'], 'claude-opus-4-8'),
         apiType: envValue(env, ['AGENT_FINAL_API_TYPE'], 'openai'),
+        extraHeaders: finalSessionId ? { 'X-Ombre-Session-Id': finalSessionId } : undefined,
         temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
         reasoningEffort: body.reasoning_effort || body.reasoningEffort || undefined,
         autoRetryEnabled: body.auto_retry_enabled !== false,
