@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
-import { PROACTIVE_USER_REPLY_GRACE_MS, runProactiveTick, upgradeLegacyImageSchema } from '../src/proactive/tick.js';
+import {
+    PROACTIVE_USER_REPLY_GRACE_MS,
+    normalizeProactiveImageContent,
+    runProactiveTick,
+    upgradeLegacyImageSchema,
+} from '../src/proactive/tick.js';
 import {
     BACKEND_FIRE_COOLDOWN_MS,
     PROACTIVE_GENERATION_CLAIM_TTL_MS,
@@ -62,14 +67,31 @@ function testUpgradeLegacyImageSchema() {
     const noImage = 'text only';
     assert.equal(upgradeLegacyImageSchema(noImage), noImage);
 
-    const current = '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:XXX] 描述照片内容","loc":"地点","time":"时间"}';
+    const current = '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:PERSON_EMOTION] NovelAI tags in English","loc":"地点","time":"时间"}';
     assert.equal(upgradeLegacyImageSchema(current), current);
 
     const legacy = '{"t":"image","d":"描述照片内容","loc":"地点","time":"时间"}photo—d=对话语言简短描述(如:刚买的蛋糕/窗外的晚霞/自拍)';
     const upgraded = upgradeLegacyImageSchema(legacy);
     assert.match(upgraded, /"sub":"selfie\|scene"/);
-    assert.match(upgraded, /\[SUBJECT:XXX\]/);
+    assert.match(upgraded, /\[SUBJECT:PERSON_EMOTION\]/);
+    assert.match(upgraded, /NovelAI tags in English/);
     assert.match(upgraded, /selfie=角色本人入镜/);
+
+    const previousRelaySchema = '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:XXX] 描述照片内容","loc":"地点","time":"时间"}photo—sub:selfie=角色本人入镜, scene=角色不入镜的食物/物品/风景/环境; d 必须以 [SUBJECT:XXX] 开头';
+    assert.match(upgradeLegacyImageSchema(previousRelaySchema), /SUBJECT 里写代码不要写人名/);
+}
+
+function testNormalizeProactiveImageContent() {
+    const content = [
+        '{"t":"text","c":"等我"}',
+        '{"t":"image","sub":"selfie","d":"[SUBJECT:早川秋] 22岁高大帅气男人，黑色西装","loc":"虚拟房间","time":"晚上"}',
+    ].join('\n');
+    const normalized = normalizeProactiveImageContent(content);
+    assert.match(normalized, /\[SUBJECT:PERSON_EMOTION\]/);
+    assert.doesNotMatch(normalized, /\[SUBJECT:早川秋\]/);
+
+    const valid = '{"t":"image","sub":"selfie","d":"[SUBJECT:PERSON_EMOTION] close-up, eye level, 1boy","loc":"虚拟房间","time":"晚上"}';
+    assert.equal(normalizeProactiveImageContent(valid), valid);
 }
 
 async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
@@ -565,6 +587,7 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
 }
 
 testUpgradeLegacyImageSchema();
+testNormalizeProactiveImageContent();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testIntervalModeCanFireBelowBackendImpulseCooldown();
