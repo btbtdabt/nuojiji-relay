@@ -18,6 +18,8 @@
 //
 // 🔒 promptTemplate 是手机端拼好的文本，后端只 String.replaceAll 占位符，不含任何提示词逻辑。
 
+import { mergePendingCommitments } from '../util/commitments.js';
+
 export const PROACTIVE_WINDOW_CAP = 30;
 // 后端 cron 触发后的最小静默（防 1 分钟 cron 连发；与手机端冷却独立）
 export const BACKEND_FIRE_COOLDOWN_MS = 20 * 60 * 1000;
@@ -137,6 +139,10 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     if (next.lifeState !== undefined) {
         const allowStreakDecrease = !prevLastFiredAt || incomingInteractionAt > prevLastFiredAt;
         merged.lifeState = mergeLifeState(prev.lifeState, next.lifeState, { allowStreakDecrease });
+    }
+
+    if (next.pendingCommitments !== undefined) {
+        merged.pendingCommitments = mergePendingCommitments([], next.pendingCommitments, { now });
     }
 
     const isServerFireWindowPatch = incomingFiredAt > 0

@@ -14,6 +14,12 @@ import { runGeneration } from '../ai/aiCaller.js';
 import { dispatchPush } from '../push/pushSender.js';
 import { nowMs, extractPushBodies } from '../util/ids.js';
 import { renderTimeTokens } from '../util/timeTokens.js';
+import {
+    formatPendingCommitmentsForPrompt,
+    mergePendingCommitments,
+    parseCommitmentsFromContent,
+    pendingCommitmentBlockReason,
+} from '../util/commitments.js';
 import { buildMemoryContext } from './mcpContext.js';
 import {
     clipDebugValue,
@@ -130,6 +136,8 @@ export async function runProactiveTick(env) {
             if (activeGenerationStartedAt && (now - activeGenerationStartedAt) < PROACTIVE_GENERATION_CLAIM_TTL_MS) continue;
             const lastInteractionAt = Number(rec.lastInteractionAt) || 0;
             if (lastInteractionAt && (now - lastInteractionAt) < PROACTIVE_USER_REPLY_GRACE_MS) continue;
+            const commitmentBlockReason = pendingCommitmentBlockReason(rec.pendingCommitments, now);
+            if (commitmentBlockReason) continue;
 
             // 两种触发档：'impulse'(真人模式) / 'interval'(普通后台主动，计时+概率高中低)
             let verdict;
@@ -192,8 +200,9 @@ export async function runProactiveTick(env) {
             }
             // 先填即时真时间哨兵（§NOW_*§），再填滑窗/理由/记忆占位符。
             const timedTemplate = renderTimeTokens(rec.promptTemplate, rec.timeSpec, now, rec.lastInteractionAt || 0);
+            const commitmentContext = formatPendingCommitmentsForPrompt(rec.pendingCommitments, now);
             const systemContent = upgradeLegacyImageSchema(
-                fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory })
+                fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory }) + commitmentContext
             );
             // ⚠️ 必须追加一条 user 占位（与 APP 本地路径 useAIRespond.js 的「请开始回复。」对齐）：
             //    只有 system 一条时，OpenAI/Claude 能跑，但走 gemini 反代（OpenAI→Gemini 转译）时
@@ -249,6 +258,12 @@ export async function runProactiveTick(env) {
             } catch (e) {
                 error = String(e?.message || e);
             }
+            const utcOffsetSeconds = typeof rec.timeSpec?.userUtcOffsetSeconds === 'number'
+                ? rec.timeSpec.userUtcOffsetSeconds
+                : (typeof rec.charUtcOffsetSeconds === 'number' ? rec.charUtcOffsetSeconds : null);
+            const outputCommitments = !error
+                ? parseCommitmentsFromContent(content, { now, utcOffsetSeconds })
+                : [];
 
             const latest = await proactive.get?.(rec.inboxId, rec.userId, rec.charId);
             if (!latest || latest.enabled === false) {
@@ -307,6 +322,15 @@ export async function runProactiveTick(env) {
             //    user 一直不回时反复主动 = 重复消息。仅 impulse 模式自增（interval 模式不看 streak）。
             const prevStreak = (ls.unansweredStreak || 0);
             const nextStreak = (rec.mode === 'interval' || error) ? prevStreak : prevStreak + 1;
+            const commitmentPatch = outputCommitments.length
+                ? {
+                    pendingCommitments: mergePendingCommitments(
+                        latest.pendingCommitments,
+                        outputCommitments,
+                        { now, utcOffsetSeconds }
+                    ),
+                }
+                : {};
             await proactive.patch(rec.inboxId, rec.userId, rec.charId, {
                 lastFiredAt: now,
                 generationStartedAt: 0,
@@ -316,8 +340,13 @@ export async function runProactiveTick(env) {
                 // 🕒 自己刚发完 → lastInteractionAt 也推进到现在，否则「距上次多久」一直从旧时间算，
                 //    下次 tick 会以为隔了很久（其实自己刚发过）→ 误触发频繁主动 / since 文本失真。
                 lastInteractionAt: now,
+                ...commitmentPatch,
             });
-            await logAttempt('complete', { generated: !error, outbox: true });
+            await logAttempt('complete', {
+                generated: !error,
+                outbox: true,
+                commitmentCount: outputCommitments.length,
+            });
 
             // 发推送叫醒——像微信那样【逐条气泡分开弹 + 带消息内容 + 角色名标题】，
             // 与 /generate 路径一致（extractPushBodies 把 AI 的 JSON-Lines 拆成每个气泡一条文本）。

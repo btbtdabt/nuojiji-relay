@@ -29,8 +29,26 @@ import {
 import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
+import { mergePendingCommitments, parseCommitmentsFromContent } from './util/commitments.js';
 
 const VERSION = '1.0.0';
+
+async function persistOutputCommitments(proactive, { inboxId, userId, charId, content, now }) {
+    if (!userId || !charId || !content) return [];
+    const current = await proactive.get?.(inboxId, userId, charId);
+    const utcOffsetSeconds = typeof current?.timeSpec?.userUtcOffsetSeconds === 'number'
+        ? current.timeSpec.userUtcOffsetSeconds
+        : (typeof current?.charUtcOffsetSeconds === 'number' ? current.charUtcOffsetSeconds : null);
+    const commitments = parseCommitmentsFromContent(content, { now, utcOffsetSeconds });
+    if (!commitments.length) return [];
+    const pendingCommitments = mergePendingCommitments(
+        current?.pendingCommitments,
+        commitments,
+        { now, utcOffsetSeconds }
+    );
+    await proactive.patch(inboxId, userId, charId, { pendingCommitments });
+    return commitments;
+}
 
 export function createApp() {
     const app = new Hono();
@@ -148,6 +166,7 @@ export function createApp() {
         //    手机端是 fire-and-forget + 轮询，不在乎 /generate 响应快慢，故改同步等待最可靠。
         const id = makeMessageId(requestId);
         let item;
+        let outputCommitments = [];
         try {
             try {
                 const content = await runGeneration(settings, messages, maxTokens);
@@ -164,6 +183,19 @@ export function createApp() {
                 };
             }
             await outbox.put(inboxId, item);
+            if (!item.error && proactiveUserId && proactiveCharId) {
+                try {
+                    outputCommitments = await persistOutputCommitments(proactive, {
+                        inboxId,
+                        userId: proactiveUserId,
+                        charId: proactiveCharId,
+                        content: item.content,
+                        now: item.createdAt,
+                    });
+                } catch (e) {
+                    console.warn('[generate] commitment persistence failed:', e?.message);
+                }
+            }
         } finally {
             if (replyGenerationClaimId && proactiveUserId && proactiveCharId) {
                 try {
@@ -195,6 +227,7 @@ export function createApp() {
             request: summarizeMessages(messages),
             aiSettings: summarizeAiSettings(settings),
             responseChars: item.content ? String(item.content).length : 0,
+            commitmentCount: outputCommitments.length,
             error: item.error ? debugError(new Error(item.error)) : null,
             durationMs: Date.now() - startedAt,
             full: debugFull ? {

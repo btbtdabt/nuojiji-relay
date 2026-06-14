@@ -512,6 +512,160 @@ async function testGenerateImmediatelyUpdatesProactiveInteractionState() {
         assert.equal(stored.generationStartedAt, 0);
         assert.equal(stored.generationClaimId, null);
         assert.equal(stored.lifeState.unansweredStreak, 0);
+        assert.deepEqual(stored.pendingCommitments || [], []);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testGeneratePersistsOutputCommitments() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    const now = 36_500_000;
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+        choices: [{
+            message: {
+                content: [
+                    JSON.stringify({ t: 'text', c: '等我' }),
+                    JSON.stringify({ t: 'commitment', at: '+5min', kind: 'activity', hint: '换好西装回来' }),
+                ].join('\n'),
+            },
+        }],
+    }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+    });
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'interval',
+            interval: 1,
+            intervalUnit: 'minutes',
+            probability: 'high',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}',
+            lifeState: { unansweredStreak: 0 },
+            recentMessages: [{ sender: 'me', text: 'before' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        const generateRes = await postJson(app, env, '/generate', {
+            requestId: 'req-commitment',
+            inboxId: 'inbox',
+            messages: [{ role: 'user', content: '换西装' }],
+            settings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            meta: { userId: 'user', charId: 'char', roundId: 'round' },
+        });
+        assert.equal(generateRes.status, 202);
+
+        const stored = parseStoredPair(kv);
+        assert.equal(stored.pendingCommitments.length, 1);
+        assert.equal(stored.pendingCommitments[0].kind, 'activity');
+        assert.equal(stored.pendingCommitments[0].hint, '换好西装回来');
+        assert.equal(stored.pendingCommitments[0].dueAt, now + 5 * 60_000);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testPendingCommitmentsGateProactiveTick() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    const now = 37_000_000;
+    const aiRequests = [];
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async (_url, init) => {
+        aiRequests.push(JSON.parse(String(init?.body || '{}')));
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'server proactive' }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'interval',
+            interval: 1,
+            intervalUnit: 'minutes',
+            probability: 'high',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}',
+            lifeState: { unansweredStreak: 0 },
+            recentMessages: [{ sender: 'me', text: 'before' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        let stored = parseStoredPair(kv);
+        stored.pendingCommitments = [{ t: 'commitment', kind: 'activity', at: '+5min', hint: '换衣服', dueAt: now + 5 * 60_000, createdAt: now }];
+        await kv.put('p:inbox:user:char', JSON.stringify(stored));
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+
+        stored = parseStoredPair(kv);
+        stored.pendingCommitments = [{ t: 'commitment', kind: 'promise', at: '+30min', hint: '发照片', dueAt: now + 30 * 60_000, createdAt: now }];
+        await kv.put('p:inbox:user:char', JSON.stringify(stored));
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+
+        stored = parseStoredPair(kv);
+        stored.pendingCommitments = [{ t: 'commitment', kind: 'promise', at: '+2h', hint: '发方案', dueAt: now + 2 * 60 * 60_000, createdAt: now }];
+        await kv.put('p:inbox:user:char', JSON.stringify(stored));
+        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assert.equal(aiRequests.length, 1);
+        assert.match(aiRequests[0].messages[0].content, /\[PENDING_COMMITMENTS_FROM_RELAY\]/);
+        assert.match(aiRequests[0].messages[0].content, /Do not complete a future commitment before its due time/);
     } finally {
         Date.now = originalNow;
         Math.random = originalRandom;
@@ -593,5 +747,7 @@ await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testIntervalModeCanFireBelowBackendImpulseCooldown();
 await testTickSkipsShortlyAfterUserInteraction();
 await testGenerateImmediatelyUpdatesProactiveInteractionState();
+await testGeneratePersistsOutputCommitments();
+await testPendingCommitmentsGateProactiveTick();
 await testActiveGenerationClaimBlocksWithinConfiguredTtl();
 console.log('proactiveTick tests passed');
