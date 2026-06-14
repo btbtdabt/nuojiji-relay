@@ -184,6 +184,7 @@ export async function handleAgentChatCompletions(c) {
             coordinatorDebug = result.debug || coordinatorDebug;
         } catch (error) {
             coordinatorError = error;
+            coordinatorDebug = error?.coordinatorDebug || coordinatorDebug;
             console.warn('[agentRelay] coordinator failed:', error?.message || error);
         }
     } else {

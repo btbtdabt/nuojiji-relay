@@ -96,6 +96,17 @@ async function testOutboxDebugShowsItemsHiddenBySince() {
         });
         assert.equal(generate.status, 202);
 
+        const generateEvents = (await debugEvents(kv)).filter((event) => event.type === 'relay_generate');
+        const startEvent = generateEvents.find((event) => event.stage === 'start');
+        const completeEvent = generateEvents.find((event) => event.stage === 'complete');
+        assert.ok(startEvent);
+        assert.ok(completeEvent);
+        assert.equal(startEvent.requestId, 'req-hidden');
+        assert.equal(startEvent.request.last_user_preview, 'hello');
+        assert.equal(startEvent.aiSettings.hasMainApiKey, true);
+        assert.equal(startEvent.aiSettings.mainApiKey, undefined);
+        assert.equal(completeEvent.requestId, 'req-hidden');
+
         const listed = await getJson(app, kv, '/outbox?inboxId=inbox&since=10000');
         assert.deepEqual(listed.items, []);
 

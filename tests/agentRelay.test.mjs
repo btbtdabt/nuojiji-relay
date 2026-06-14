@@ -471,9 +471,9 @@ async function testCoordinatorFailureSkipsFinalModel() {
         if (textUrl.includes('gateway.example.com')) {
             geminiCalls++;
             return new Response(JSON.stringify({
-                error: { code: 503, message: 'temporary unavailable', status: 'UNAVAILABLE' },
+                error: { code: 524, message: 'gateway timeout', status: 'DEADLINE_EXCEEDED' },
             }), {
-                status: 503,
+                status: 524,
                 headers: { 'content-type': 'application/json' },
             });
         }
@@ -505,6 +505,7 @@ async function testCoordinatorFailureSkipsFinalModel() {
         const data = await res.json();
         const content = data.choices?.[0]?.message?.content || '';
         assert.match(content, /coordinator报错/);
+        assert.match(content, /524/);
         assert.equal(geminiCalls, 3);
         assert.equal(finalCalls, 0);
 
@@ -512,6 +513,17 @@ async function testCoordinatorFailureSkipsFinalModel() {
         assert.equal(events[0].stage, 'coordinator');
         assert.equal(events[0].ok, false);
         assert.equal(events[0].final.skipped, true);
+        assert.deepEqual(events[0].coordinator.gemini_attempts.map((item) => ({
+            round: item.round,
+            attempt: item.attempt,
+            ok: item.ok,
+            status: item.status,
+            retryable: item.retryable,
+        })), [
+            { round: 1, attempt: 1, ok: false, status: 524, retryable: true },
+            { round: 1, attempt: 2, ok: false, status: 524, retryable: true },
+            { round: 1, attempt: 3, ok: false, status: 524, retryable: true },
+        ]);
     } finally {
         globalThis.fetch = originalFetch;
     }

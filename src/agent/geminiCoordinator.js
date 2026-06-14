@@ -448,6 +448,17 @@ async function callGeminiGenerateContent(options) {
     throw lastError;
 }
 
+function attachCoordinatorDebug(error, debug) {
+    const normalized = error instanceof Error ? error : new Error(String(error || 'Unknown coordinator error'));
+    if (!normalized.coordinatorDebug) normalized.coordinatorDebug = debug;
+    return normalized;
+}
+
+function rememberCoordinatorError(debug, error) {
+    const message = String(error?.message || error || '').slice(0, 500);
+    if (message && !debug.errors.includes(message)) debug.errors.push(message);
+}
+
 function extractFunctionCalls(content) {
     const calls = [];
     for (const part of content?.parts || []) {
@@ -499,104 +510,109 @@ export async function runOmbreCoordinator({
     if (!baseUrl) return { relevantInfo: '', skipped: 'missing coordinator base url', debug: { ...debug, skipped: 'missing coordinator base url' } };
     if (!mcpServer?.url) return { relevantInfo: '', skipped: 'missing mcp server url', debug: { ...debug, skipped: 'missing mcp server url' } };
 
-    const mcp = await createMcpSession(mcpServer, { timeoutMs });
-    const tools = await mcp.listTools();
-    debug.tool_count = tools.length;
-    if (debugFull) {
-        debug.full = {
-            coordinator_system_prompt: clipDebugValue(OMBRE_COORDINATOR_PROMPT, debugCharLimit),
-            coordinator_route: clipDebugValue({ baseUrl, model, authType, sessionId }, debugCharLimit),
-            tools: clipDebugValue(tools.map((tool) => ({
-                name: tool?.name || '',
-                description: tool?.description || '',
-                inputSchema: tool?.inputSchema || tool?.parameters || {},
-            })), debugCharLimit),
-        };
-    }
-    const { functionDeclarations, nameMap } = prepareGeminiFunctionDeclarations(tools);
-    if (functionDeclarations.length === 0) return { relevantInfo: '', skipped: 'no mcp tools', debug: { ...debug, skipped: 'no mcp tools' } };
-
-    const coordinatorInput = formatMessagesForCoordinator(messages, tools);
-    const currentQuery = buildCoordinatorQueryHint(messages);
-    if (debugFull) {
-        debug.full.coordinator_input = clipDebugValue(coordinatorInput, debugCharLimit);
-        debug.full.current_query = clipDebugValue(currentQuery, debugCharLimit);
-    }
-    const contents = [{
-        role: 'user',
-        parts: [{ text: coordinatorInput }],
-    }];
-
-    for (let round = 0; round <= maxToolRounds; round++) {
-        debug.rounds = round + 1;
-        const candidate = await callGeminiGenerateContent({
-            apiKey,
-            baseUrl,
-            authType,
-            sessionId,
-            currentQuery,
-            model,
-            contents,
-            functionDeclarations,
-            timeoutMs,
-            retryAttempts: geminiRetryAttempts,
-            onAttempt: (attemptDebug) => {
-                debug.gemini_attempts.push({ round: round + 1, ...attemptDebug });
-            },
-            fetchImpl,
-        });
-
-        const calls = extractFunctionCalls(candidate.content);
-        if (calls.length === 0) {
-            const text = extractText(candidate.content);
-            debug.relevant_info_chars = text.length;
-            if (debugFull) {
-                debug.full.coordinator_output = clipDebugValue(text, debugCharLimit);
-            }
-            if (!text || text.trim() === NO_RELEVANT_INFO) return { relevantInfo: '', debug };
-            if (isLikelyNuojijiReply(text)) {
-                debug.skipped = 'coordinator output looked like final chat-app reply';
-                debug.errors.push(debug.skipped);
-                return { relevantInfo: '', debug };
-            }
-            return { relevantInfo: text, debug };
+    try {
+        const mcp = await createMcpSession(mcpServer, { timeoutMs });
+        const tools = await mcp.listTools();
+        debug.tool_count = tools.length;
+        if (debugFull) {
+            debug.full = {
+                coordinator_system_prompt: clipDebugValue(OMBRE_COORDINATOR_PROMPT, debugCharLimit),
+                coordinator_route: clipDebugValue({ baseUrl, model, authType, sessionId }, debugCharLimit),
+                tools: clipDebugValue(tools.map((tool) => ({
+                    name: tool?.name || '',
+                    description: tool?.description || '',
+                    inputSchema: tool?.inputSchema || tool?.parameters || {},
+                })), debugCharLimit),
+            };
         }
+        const { functionDeclarations, nameMap } = prepareGeminiFunctionDeclarations(tools);
+        if (functionDeclarations.length === 0) return { relevantInfo: '', skipped: 'no mcp tools', debug: { ...debug, skipped: 'no mcp tools' } };
 
-        if (round === maxToolRounds) {
-            throw new Error(`Gemini coordinator exceeded max tool rounds (${maxToolRounds})`);
+        const coordinatorInput = formatMessagesForCoordinator(messages, tools);
+        const currentQuery = buildCoordinatorQueryHint(messages);
+        if (debugFull) {
+            debug.full.coordinator_input = clipDebugValue(coordinatorInput, debugCharLimit);
+            debug.full.current_query = clipDebugValue(currentQuery, debugCharLimit);
         }
+        const contents = [{
+            role: 'user',
+            parts: [{ text: coordinatorInput }],
+        }];
 
-        // Preserve Gemini's model content exactly so functionCall thought signatures survive.
-        contents.push(candidate.content);
+        for (let round = 0; round <= maxToolRounds; round++) {
+            debug.rounds = round + 1;
+            const candidate = await callGeminiGenerateContent({
+                apiKey,
+                baseUrl,
+                authType,
+                sessionId,
+                currentQuery,
+                model,
+                contents,
+                functionDeclarations,
+                timeoutMs,
+                retryAttempts: geminiRetryAttempts,
+                onAttempt: (attemptDebug) => {
+                    debug.gemini_attempts.push({ round: round + 1, ...attemptDebug });
+                },
+                fetchImpl,
+            });
 
-        const responseParts = [];
-        for (const call of calls) {
-            const originalName = nameMap.get(call.name) || call.name;
-            const callDebug = { name: originalName, ok: false, result_chars: 0 };
-            if (debugFull) callDebug.args = clipDebugValue(call.args, debugCharLimit);
-            try {
-                const result = await mcp.callTool(originalName, call.args);
-                const text = mcpContentToText(result.content);
-                callDebug.ok = !result.isError;
-                callDebug.result_chars = text.length;
-                callDebug.is_error = !!result.isError;
-                if (debugFull) callDebug.result_text = clipDebugValue(text, debugCharLimit);
-                responseParts.push(buildFunctionResponsePart(call, {
-                    result: text,
-                    is_error: !!result.isError,
-                }));
-            } catch (error) {
-                callDebug.error = String(error?.message || error).slice(0, 300);
-                debug.errors.push(callDebug.error);
-                responseParts.push(buildFunctionResponsePart(call, {
-                    error: String(error?.message || error),
-                    is_error: true,
-                }));
-            } finally {
-                debug.calls.push(callDebug);
+            const calls = extractFunctionCalls(candidate.content);
+            if (calls.length === 0) {
+                const text = extractText(candidate.content);
+                debug.relevant_info_chars = text.length;
+                if (debugFull) {
+                    debug.full.coordinator_output = clipDebugValue(text, debugCharLimit);
+                }
+                if (!text || text.trim() === NO_RELEVANT_INFO) return { relevantInfo: '', debug };
+                if (isLikelyNuojijiReply(text)) {
+                    debug.skipped = 'coordinator output looked like final chat-app reply';
+                    debug.errors.push(debug.skipped);
+                    return { relevantInfo: '', debug };
+                }
+                return { relevantInfo: text, debug };
             }
+
+            if (round === maxToolRounds) {
+                throw new Error(`Gemini coordinator exceeded max tool rounds (${maxToolRounds})`);
+            }
+
+            // Preserve Gemini's model content exactly so functionCall thought signatures survive.
+            contents.push(candidate.content);
+
+            const responseParts = [];
+            for (const call of calls) {
+                const originalName = nameMap.get(call.name) || call.name;
+                const callDebug = { name: originalName, ok: false, result_chars: 0 };
+                if (debugFull) callDebug.args = clipDebugValue(call.args, debugCharLimit);
+                try {
+                    const result = await mcp.callTool(originalName, call.args);
+                    const text = mcpContentToText(result.content);
+                    callDebug.ok = !result.isError;
+                    callDebug.result_chars = text.length;
+                    callDebug.is_error = !!result.isError;
+                    if (debugFull) callDebug.result_text = clipDebugValue(text, debugCharLimit);
+                    responseParts.push(buildFunctionResponsePart(call, {
+                        result: text,
+                        is_error: !!result.isError,
+                    }));
+                } catch (error) {
+                    callDebug.error = String(error?.message || error).slice(0, 300);
+                    debug.errors.push(callDebug.error);
+                    responseParts.push(buildFunctionResponsePart(call, {
+                        error: String(error?.message || error),
+                        is_error: true,
+                    }));
+                } finally {
+                    debug.calls.push(callDebug);
+                }
+            }
+            contents.push(buildGeminiFunctionResponseContent(responseParts));
         }
-        contents.push(buildGeminiFunctionResponseContent(responseParts));
+    } catch (error) {
+        rememberCoordinatorError(debug, error);
+        throw attachCoordinatorDebug(error, debug);
     }
 
     return { relevantInfo: '', debug };

@@ -249,6 +249,25 @@ export function createApp() {
                 console.warn('[generate] proactive state sync failed:', e?.message);
             }
         }
+        await logAgentEvent(c.env, {
+            type: 'relay_generate',
+            ok: true,
+            stage: 'start',
+            requestId,
+            inboxId,
+            userId: proactiveUserId,
+            charId: proactiveCharId,
+            roundId: meta?.roundId ?? null,
+            maxTokens: maxTokens ?? null,
+            generationClaimId: replyGenerationClaimId,
+            hasProactiveContext: !!(proactiveUserId && proactiveCharId),
+            request: summarizeMessages(messages),
+            aiSettings: summarizeAiSettings(settings),
+            full: debugFull ? {
+                original_messages: clipDebugValue(messages, debugCharLimit),
+                meta: clipDebugValue(meta || {}, debugCharLimit),
+            } : undefined,
+        });
 
         // ⚠️ 在请求生命周期内「同步」跑完生成 + 写 outbox，再返回。
         //    早期用 c.executionCtx.waitUntil 在响应后跑后台任务，但 Cloudflare 免费版 Workers 对
