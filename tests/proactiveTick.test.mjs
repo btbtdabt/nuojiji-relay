@@ -86,6 +86,7 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
     const originalFetch = globalThis.fetch;
     let now = 10_000_000;
     const aiRequests = [];
+    const aiHeaders = [];
     const aiReplies = [
         JSON.stringify({ t: 'text', c: 'server proactive' }),
         JSON.stringify({ t: 'text', c: 'followup proactive' }),
@@ -94,6 +95,7 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
     Date.now = () => now;
     Math.random = () => 0;
     globalThis.fetch = async (_url, init) => {
+        aiHeaders.push(init?.headers || {});
         aiRequests.push(JSON.parse(String(init?.body || '{}')));
         return new Response(JSON.stringify({
             choices: [{ message: { content: aiReplies[aiRequests.length - 1] } }],
@@ -148,6 +150,10 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
         assert.equal(aiRequests[0].messages[0].role, 'system');
         assert.equal(JSON.stringify(aiRequests[0].messages).includes('请开始回复'), false);
         assert.match(aiRequests[0].messages[0].content, /User: before/);
+        assert.match(
+            Buffer.from(aiHeaders[0]['X-Ombre-Current-Query-B64'] || '', 'base64').toString('utf8'),
+            /Recent transcript:\nUser: before/
+        );
 
         const firstOutbox = await getJson(app, env, '/outbox?inboxId=inbox');
         assert.equal(firstOutbox.items.length, 1);
@@ -184,6 +190,10 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
         assert.equal(JSON.stringify(aiRequests[1].messages).includes('请开始回复'), false);
         assert.match(aiRequests[1].messages[0].content, /User: before/);
         assert.match(aiRequests[1].messages[0].content, /Char: server proactive/);
+        assert.match(
+            Buffer.from(aiHeaders[1]['X-Ombre-Current-Query-B64'] || '', 'base64').toString('utf8'),
+            /Char: server proactive/
+        );
     } finally {
         Date.now = originalNow;
         Math.random = originalRandom;

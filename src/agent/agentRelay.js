@@ -1,5 +1,5 @@
 import { runGeneration } from '../ai/aiCaller.js';
-import { runOmbreCoordinator } from './geminiCoordinator.js';
+import { buildCoordinatorQueryHint, runOmbreCoordinator } from './geminiCoordinator.js';
 import { NO_RELEVANT_INFO } from './ombreCoordinatorPrompt.js';
 import {
     clipDebugValue,
@@ -64,12 +64,14 @@ export function buildCoordinatorConfig(env) {
 
 export function buildFinalSettings(env, body = {}) {
     const finalSessionId = envValue(env, ['AGENT_FINAL_OMBRE_SESSION_ID', 'AGENT_FINAL_SESSION_ID'], '');
+    const currentQuery = buildCoordinatorQueryHint(body?.messages || []);
     return {
         mainApiUrl: envValue(env, ['AGENT_FINAL_API_URL', 'AGENT_FINAL_BASE_URL', 'CLAUDE_PROXY_BASE_URL'], ''),
         mainApiKey: envValue(env, ['AGENT_FINAL_API_KEY', 'CLAUDE_PROXY_API_KEY'], ''),
         mainApiModel: envValue(env, ['AGENT_FINAL_MODEL', 'CLAUDE_PROXY_MODEL'], 'claude-opus-4-8'),
         apiType: envValue(env, ['AGENT_FINAL_API_TYPE'], 'openai'),
         extraHeaders: finalSessionId ? { 'X-Ombre-Session-Id': finalSessionId } : undefined,
+        currentQuery,
         temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
         reasoningEffort: body.reasoning_effort || body.reasoningEffort || undefined,
         autoRetryEnabled: body.auto_retry_enabled !== false,

@@ -64,6 +64,51 @@ async function testSseFinalDataLineWithoutTrailingNewlineIsParsed() {
     }
 }
 
+async function testRunGenerationAddsCurrentQueryHeaderWithoutChangingMessages() {
+    const originalFetch = globalThis.fetch;
+    let captured = null;
+    const messages = [{ role: 'system', content: 'Generate one proactive message.' }];
+    globalThis.fetch = async (_url, init) => {
+        captured = {
+            headers: init?.headers || {},
+            body: JSON.parse(String(init?.body || '{}')),
+        };
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+            start(controller) {
+                controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'));
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                controller.close();
+            },
+        });
+        return new Response(stream, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+        });
+    };
+
+    try {
+        const content = await runGeneration({
+            mainApiUrl: 'https://gateway.example.com/v1',
+            mainApiKey: 'test-key',
+            mainApiModel: 'test-model',
+            apiType: 'openai',
+            currentQuery: 'Proactive: 海鲜偏好',
+            autoRetryEnabled: false,
+            secondaryFallbackEnabled: false,
+        }, messages);
+
+        assert.equal(content, 'ok');
+        assert.deepEqual(captured.body.messages, messages);
+        assert.equal(JSON.stringify(captured.body).includes('请开始回复'), false);
+        const encoded = captured.headers['X-Ombre-Current-Query-B64'];
+        assert.ok(encoded);
+        assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), 'Proactive: 海鲜偏好');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 function testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText() {
     const messages = [{ role: 'system', content: 'Generate one proactive message.' }];
     const body = buildChatRequestBody({
@@ -82,5 +127,6 @@ function testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText() {
 testGeminiNonStreamJoinsAllTextParts();
 testClaudeNonStreamJoinsAllTextBlocks();
 await testSseFinalDataLineWithoutTrailingNewlineIsParsed();
+await testRunGenerationAddsCurrentQueryHeaderWithoutChangingMessages();
 testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText();
 console.log('aiParsing tests passed');

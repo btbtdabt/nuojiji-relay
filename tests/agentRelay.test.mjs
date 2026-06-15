@@ -122,6 +122,7 @@ function testEnvConfigAliases() {
     assert.equal(buildCoordinatorConfig(env).sessionId, 'agent-coordinator');
     assert.equal(buildFinalSettings(env).mainApiModel, 'claude-opus-4-8');
     assert.deepEqual(buildFinalSettings(env).extraHeaders, { 'X-Ombre-Session-Id': 'main' });
+    assert.equal(buildFinalSettings(env).currentQuery, '');
 }
 
 function testCoordinatorConfigHasNoDirectGeminiDefault() {
@@ -294,6 +295,10 @@ async function testAgentStreamUsesSeparateStopChunk() {
         }
         aiRequests.push(body);
         assert.equal(init?.headers?.['X-Ombre-Session-Id'], 'main');
+        assert.equal(
+            Buffer.from(init?.headers?.['X-Ombre-Current-Query-B64'] || '', 'base64').toString('utf8'),
+            'hi'
+        );
         return new Response(JSON.stringify({
             choices: [{ message: { content: 'hello stream' } }],
         }), {

@@ -53,6 +53,14 @@ function fillTemplate(template, { transcript, reason, memory }) {
         .replaceAll('{{MEMORY_CONTEXT}}', memory || '');
 }
 
+function buildProactiveCurrentQuery({ transcript, reason }) {
+    return [
+        'Proactive message generation.',
+        reason ? `Trigger reason: ${reason}` : '',
+        transcript ? `Recent transcript:\n${transcript}` : '',
+    ].filter(Boolean).join('\n');
+}
+
 export function upgradeProactiveImageSchema(systemContent) {
     let text = String(systemContent || '');
     const imageObjectSchema = '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:XXX] EN desc","loc":"地点","time":"时间"}';
@@ -239,7 +247,14 @@ export async function runProactiveTick(env) {
                 });
             };
             try {
-                content = await runGeneration(rec.aiSettings, messages, rec.aiSettings?.maxTokens || null);
+                content = await runGeneration(
+                    {
+                        ...(rec.aiSettings || {}),
+                        currentQuery: buildProactiveCurrentQuery({ transcript, reason: verdict.reason }),
+                    },
+                    messages,
+                    rec.aiSettings?.maxTokens || null
+                );
             } catch (e) {
                 error = String(e?.message || e);
             }

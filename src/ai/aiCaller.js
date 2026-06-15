@@ -6,10 +6,30 @@ import { buildChatEndpoint, buildApiHeaders, buildChatRequestBody, assertSafeApi
 
 const REQUEST_TIMEOUT_MS = 600_000;
 
-async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature, reasoningEffort, maxTokens, extraHeaders }) {
+function utf8Base64(text) {
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
+}
+
+function withCurrentQueryHeader(headers, currentQuery) {
+    const query = String(currentQuery || '').trim();
+    if (!query) return headers;
+    if (headers['X-Ombre-Current-Query'] || headers['X-Ombre-Current-Query-B64']) return headers;
+    return {
+        ...headers,
+        'X-Ombre-Current-Query-B64': utf8Base64(query.slice(0, 4000)),
+    };
+}
+
+async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery }) {
     assertSafeApiUrl(apiUrl);
     const endpoint = buildChatEndpoint(apiUrl);
-    const headers = buildApiHeaders(apiUrl, apiKey, extraHeaders);
+    const headers = withCurrentQueryHeader(
+        buildApiHeaders(apiUrl, apiKey, extraHeaders),
+        currentQuery
+    );
     // ⚠️ 用流式调 AI（stream:true）：部分 AI 代理（如 gemini 反代）对「非流式 + 图片」会 500，
     //    流式正常。后端在请求内读完整个 SSE 流、把 delta 拼成完整 content 再返回 —— 对手机端
     //    仍是「整条结果进 outbox」的非流式交付，只是后端内部走流式绕开代理的非流式限制。
@@ -101,7 +121,7 @@ export async function runGeneration(settings, messages, maxTokens) {
         mainApiUrl, mainApiKey, mainApiModel, apiType = 'openai',
         temperature, reasoningEffort,
         autoRetryEnabled = true, maxRetries = 1, secondaryFallbackEnabled = true,
-        secondaryApiUrl, secondaryApiKey, secondaryApiModel, extraHeaders,
+        secondaryApiUrl, secondaryApiKey, secondaryApiModel, extraHeaders, currentQuery,
     } = settings || {};
 
     if (!mainApiUrl || !mainApiKey) throw new Error('settings.mainApiUrl / mainApiKey missing');
@@ -114,7 +134,7 @@ export async function runGeneration(settings, messages, maxTokens) {
         try {
             return await callOnce({
                 apiUrl: mainApiUrl, apiKey: mainApiKey, model: mainApiModel, apiType,
-                messages, temperature, reasoningEffort, maxTokens, extraHeaders,
+                messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery,
             });
         } catch (e) {
             lastErr = e;
@@ -128,7 +148,7 @@ export async function runGeneration(settings, messages, maxTokens) {
         try {
             return await callOnce({
                 apiUrl: secondaryApiUrl, apiKey: secondaryApiKey, model: secondaryApiModel || mainApiModel, apiType,
-                messages, temperature, reasoningEffort, maxTokens, extraHeaders,
+                messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery,
             });
         } catch (e) {
             lastErr = e;
