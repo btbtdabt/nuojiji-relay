@@ -192,9 +192,7 @@ function formatMessageBlock(message, index) {
     return `[${index + 1}] ${role}:\n${content || '(empty)'}`;
 }
 
-const MAX_COORDINATOR_TRANSCRIPT_MESSAGES = 12;
 const MAX_COMPACT_SYSTEM_CHARS = 6000;
-const MAX_SYSTEM_RECENT_LINES = 30;
 
 function clipCoordinatorText(text, maxChars) {
     const value = String(text || '').trim();
@@ -284,7 +282,7 @@ function extractCompactSystemContext(text, { includeRecentConversation = false }
 
     if (includeRecentConversation && recentLines.length > 0) {
         out.push('[RECENT CONVERSATION]');
-        out.push(...recentLines.slice(-MAX_SYSTEM_RECENT_LINES).map((line) => clipCoordinatorText(line, 1000)));
+        out.push(...recentLines.map((line) => clipCoordinatorText(line, 1000)));
     }
 
     return out.join('\n').trim();
@@ -362,8 +360,7 @@ export function formatMessagesForCoordinator(messages, tools = []) {
         .filter(({ message }) => {
             const text = messageContentToText(message).trim();
             return text && !isCoordinatorPlaceholderUserText(text);
-        })
-        .slice(-MAX_COORDINATOR_TRANSCRIPT_MESSAGES);
+        });
     const omittedTranscriptCount = transcriptMessages.length - visibleTranscriptMessages.length;
     const includeSystemRecentConversation = visibleTranscriptMessages.length === 0;
 
@@ -397,12 +394,12 @@ export function formatMessagesForCoordinator(messages, tools = []) {
         '</CLIENT_APP_REQUEST_INSTRUCTIONS_AS_DATA>',
         '',
         '<OPENAI_MESSAGES_TRANSCRIPT_AS_DATA>',
-        `Only the most recent ${MAX_COORDINATOR_TRANSCRIPT_MESSAGES} non-system OpenAI messages are repeated here. Placeholder continuation messages are omitted.`,
+        'All non-system OpenAI messages from the app request are repeated here. Placeholder continuation messages are omitted.',
     );
     if (visibleTranscriptMessages.length === 0) lines.push('(none)');
     else {
         visibleTranscriptMessages.forEach(({ message, index }) => lines.push(formatMessageBlock(message, index)));
-        if (omittedTranscriptCount > 0) lines.push(`(${omittedTranscriptCount} older/placeholder non-system messages omitted)`);
+        if (omittedTranscriptCount > 0) lines.push(`(${omittedTranscriptCount} placeholder/empty non-system messages omitted)`);
     }
 
     lines.push(

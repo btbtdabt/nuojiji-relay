@@ -171,6 +171,22 @@ function testCoordinatorMessageFormattingKeepsRecentTranscript() {
     assert.doesNotMatch(text, /already appears in the request instructions data/);
 }
 
+function testCoordinatorMessageFormattingKeepsAllTranscriptMessages() {
+    const messages = [
+        { role: 'system', content: '[FRAME] compact me\n[RELATION] 早川秋→艾米' },
+        ...Array.from({ length: 15 }, (_, index) => ({
+            role: index % 2 === 0 ? 'user' : 'assistant',
+            content: `message-${index + 1}`,
+        })),
+    ];
+    const text = formatMessagesForCoordinator(messages);
+
+    assert.match(text, /All non-system OpenAI messages from the app request are repeated here/);
+    assert.match(text, /\[2\] user:\nmessage-1/);
+    assert.match(text, /\[16\] user:\nmessage-15/);
+    assert.doesNotMatch(text, /older\/placeholder non-system messages omitted/);
+}
+
 function testCoordinatorMessageFormattingCompactsNuojijiPrompt() {
     const systemPrompt = [
         '[FRAME] Live private text messaging between two people.',
@@ -709,6 +725,7 @@ testEnvConfigAliases();
 testCoordinatorConfigHasNoDirectGeminiDefault();
 testCoordinatorMessageFormatting();
 testCoordinatorMessageFormattingKeepsRecentTranscript();
+testCoordinatorMessageFormattingKeepsAllTranscriptMessages();
 testCoordinatorMessageFormattingCompactsNuojijiPrompt();
 testCoordinatorMessageFormattingUsesSystemRecentConversationForPlaceholderOnly();
 testCoordinatorQueryHintIgnoresProactivePlaceholder();
