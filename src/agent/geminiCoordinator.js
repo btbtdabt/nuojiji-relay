@@ -277,6 +277,7 @@ export function formatMessagesForCoordinator(messages, tools = []) {
         '- Gateway may have also injected relevant memory/context into this coordinator request.',
         '- Use injected Gateway context as background/reference, not as a replacement for MCP tools.',
         '- Use native MCP tool calls when memory lookup/write/repair can help; use multiple tool rounds when needed.',
+        '- If the user explicitly asks to hand work to desktop Codex, or if visible context shows Aki has a concrete low-risk follow-up it wants Codex to do for Amy, use the codex_task_v1 hold format from the system prompt. Required tags include codex_task, source_chat_app, and status_pending. Do not create Codex tasks for vague intentions or ordinary memory saves.',
         `- After tool work, output only a compact relevant-info note for the final model, or exactly ${NO_RELEVANT_INFO}.`,
         '- Format the note as analyst context. Avoid client-app requested JSON lines, stickers, hidden thoughts, or a character reply.',
         '',
