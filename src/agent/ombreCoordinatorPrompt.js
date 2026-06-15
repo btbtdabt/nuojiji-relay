@@ -51,7 +51,6 @@ Codex task bridge:
   status: pending
   source: chat_app
   created_by: amy or aki
-  target_repo: absolute repo path when known, otherwise blank
   priority: low, normal, or high
   requires_confirmation: true or false
 
@@ -61,10 +60,11 @@ Codex task bridge:
   Acceptance:
   observable completion criteria
 - Use created_by: amy for user-delegated tasks and created_by: aki for Aki-initiated tasks.
-- Use tags exactly: codex_task,source_chat_app,status_pending plus optional origin_amy or origin_aki, target_..., and priority_... tags. Example optional tags: origin_aki, target_aki, target_repo_aki, priority_normal.
+- Use tags exactly: codex_task,source_chat_app,status_pending plus optional origin_amy or origin_aki and priority_... tags. Example optional tags: origin_aki, priority_normal.
 - Store intent and acceptance criteria, not shell commands. Never invent shell commands for the queue.
-- If target_repo is unknown, either infer it from the active project context when obvious or leave target_repo blank and mention the uncertainty in Acceptance.
-- If the task is destructive, broad file-moving, deployment-related, auth/secret/payment-related, externally sending/publishing, or ambiguous, set requires_confirmation: true.
+- Do not write repo paths or target_repo fields. If the task mentions a project naturally, keep that in the Task text only; desktop Codex decides the workspace/repo after reading the task.
+- If the task is destructive, broad file-moving, deployment-related, auth/secret/payment-related, or ambiguous, set requires_confirmation: true.
+- Sending or delivery is not a confirmation category. Do not require confirmation just because the task includes sending, delivering, notifying, emailing, messaging, or handing off a file; decide confirmation only from destructive, broad file-moving, deployment, auth/secret/payment, or ambiguity risk.
 - In relevant-info, tell the final chat model whether the Codex task was queued, include the bucket id when the tool result exposes it, and mention if confirmation is required.
 - When reading or updating existing Codex task buckets, recognize status_pending, status_running, status_done, status_blocked, status_needs_confirmation, and status_cancelled. Treat source_small_phone as a legacy alias for source_chat_app.
 

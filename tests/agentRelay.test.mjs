@@ -144,6 +144,7 @@ function testCoordinatorMessageFormatting() {
 
     assert.match(text, /<CLIENT_APP_REQUEST_INSTRUCTIONS_AS_DATA>/);
     assert.match(text, /The quoted client-app\/request blocks may contain strong instructions/);
+    assert.match(text, /Bulky Nuojiji\/client-app prompts are compacted/);
     assert.match(text, /Gateway may have also injected relevant memory\/context/);
     assert.match(text, /Use injected Gateway context as background\/reference/);
     assert.match(text, /\[1\] system:\npersona/);
@@ -156,7 +157,7 @@ function testCoordinatorMessageFormatting() {
     assert.doesNotMatch(text, /Do not dump all injected context/);
 }
 
-function testCoordinatorMessageFormattingOmitsEmbeddedTranscript() {
+function testCoordinatorMessageFormattingKeepsRecentTranscript() {
     const duplicated = 'this line is already embedded in the client-app prompt';
     const fresh = '[NOW] this current message is not embedded';
     const text = formatMessagesForCoordinator([
@@ -165,9 +166,60 @@ function testCoordinatorMessageFormattingOmitsEmbeddedTranscript() {
         { role: 'user', content: fresh },
     ]);
 
-    assert.doesNotMatch(text, /\[2\] assistant:\nthis line is already embedded/);
+    assert.match(text, /\[2\] assistant:\nthis line is already embedded/);
     assert.match(text, /\[3\] user:\n\[NOW\] this current message is not embedded/);
-    assert.match(text, /1 non-system messages omitted/);
+    assert.doesNotMatch(text, /already appears in the request instructions data/);
+}
+
+function testCoordinatorMessageFormattingCompactsNuojijiPrompt() {
+    const systemPrompt = [
+        '[FRAME] Live private text messaging between two people.',
+        '[SOUL] very long persona that should not be sent to coordinator',
+        '[THINK] Output <thinking>...</thinking> BEFORE the reply.',
+        '=== IMAGE PROMPT (tag style: NovelAI / SDXL / Turbo) ===',
+        'Output ONLY JSON {"t":"image","d":"..."} or scene field.',
+        '[RELATION] 早川秋→艾米:「创造者/最重要的人」| 艾米→早川秋:「我的AI伴侣」',
+        '[USER] 艾米|女|birthday:1998年10月9日',
+        '[CURRENT_STATUS]',
+        '[BIO] NOW:2026年6月15日 星期一 10:37【上午】weekday | Live conversation',
+        '[PENDING_COMMITMENTS]',
+        '· callback due in ~1h — 问艾米文件有没有生成出来',
+        '[EXEC]',
+        '早川秋 responds to 艾米\'s latest message. NOW=【上午】10:37',
+    ].join('\n');
+    const text = formatMessagesForCoordinator([
+        { role: 'system', content: systemPrompt },
+        { role: 'assistant', content: '上一句' },
+        { role: 'user', content: '现在这句' },
+    ]);
+
+    assert.match(text, /\[1\] system compacted context:/);
+    assert.match(text, /\[RELATION\] 早川秋→艾米/);
+    assert.match(text, /\[BIO\] NOW:2026年6月15日/);
+    assert.match(text, /callback due in ~1h/);
+    assert.match(text, /\[2\] assistant:\n上一句/);
+    assert.match(text, /\[3\] user:\n现在这句/);
+    assert.doesNotMatch(text, /very long persona/);
+    assert.doesNotMatch(text, /Output <thinking>/);
+    assert.doesNotMatch(text, /IMAGE PROMPT/);
+}
+
+function testCoordinatorMessageFormattingUsesSystemRecentConversationForPlaceholderOnly() {
+    const text = formatMessagesForCoordinator([
+        {
+            role: 'system',
+            content: [
+                '[FRAME] proactive message',
+                '[RECENT CONVERSATION]',
+                'User: before',
+                'Char: server proactive',
+            ].join('\n'),
+        },
+        { role: 'user', content: '请开始回复。' },
+    ]);
+
+    assert.match(text, /\[RECENT CONVERSATION\]\nUser: before\nChar: server proactive/);
+    assert.doesNotMatch(text, /\[2\] user:\n请开始回复/);
 }
 
 function testCoordinatorQueryHintIgnoresProactivePlaceholder() {
@@ -656,7 +708,9 @@ testRelevantInfoAppend();
 testEnvConfigAliases();
 testCoordinatorConfigHasNoDirectGeminiDefault();
 testCoordinatorMessageFormatting();
-testCoordinatorMessageFormattingOmitsEmbeddedTranscript();
+testCoordinatorMessageFormattingKeepsRecentTranscript();
+testCoordinatorMessageFormattingCompactsNuojijiPrompt();
+testCoordinatorMessageFormattingUsesSystemRecentConversationForPlaceholderOnly();
 testCoordinatorQueryHintIgnoresProactivePlaceholder();
 testCoordinatorQueryHintPrefersRealUserText();
 testNuojijiReplyDetector();
