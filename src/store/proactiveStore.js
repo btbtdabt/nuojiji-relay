@@ -11,7 +11,7 @@
 //   aiSettings,              // {mainApiUrl, mainApiKey, mainApiModel, apiType, temperature, maxTokens?}
 //   quietHours, charUtcOffsetSeconds,
 //   proactiveEnabledAt,
-//   lastInteractionAt,
+//   lastInteractionAt,          // 用户最后一次真实互动时间；角色主动发送不写这里
 //   lastFiredAt,             // 后端上次 cron 触发发送时间（防重复 + 简单冷却）
 //   enabled, updatedAt,
 // }
@@ -168,7 +168,6 @@ function applyFireMirror(rec, firedAt) {
     lifeState.lastProactiveSentAt = Math.max(lastProactiveSentAt, ts);
 
     if (!userRepliedAfterFire) {
-        rec.lastInteractionAt = Math.max(Number(rec.lastInteractionAt) || 0, ts);
         if (ts > lastProactiveSentAt) {
             lifeState.unansweredStreak = (Number(lifeState.unansweredStreak) || 0) + 1;
         }

@@ -339,9 +339,6 @@ export async function runProactiveTick(env) {
                 generationClaimId: null,
                 lifeState: { ...ls, lastImpulseAt: now, lastProactiveSentAt: now, unansweredStreak: nextStreak },
                 recentMessages: nextWindow,
-                // 🕒 自己刚发完 → lastInteractionAt 也推进到现在，否则「距上次多久」一直从旧时间算，
-                //    下次 tick 会以为隔了很久（其实自己刚发过）→ 误触发频繁主动 / since 文本失真。
-                lastInteractionAt: now,
                 ...commitmentPatch,
             });
             await logAttempt('complete', {
