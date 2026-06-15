@@ -10,6 +10,7 @@ import { dispatchPush } from '../push/pushSender.js';
 import { nowMs, extractPushBodies } from '../util/ids.js';
 import { renderTimeTokens } from '../util/timeTokens.js';
 import { buildMemoryContext } from './mcpContext.js';
+import { runProactiveToolLoop } from './proactiveToolPrefetch.js';
 
 // 把滑窗消息渲染成转录文本（喂进 promptTemplate 的 {{RECENT_MESSAGES}}）
 function renderTranscript(recentMessages) {
@@ -123,7 +124,7 @@ export async function runProactiveTick(env) {
             await proactive.claimFire(rec.inboxId, rec.userId, rec.charId, now);
 
             // 命中 → 实时生成。messages 只有一条 system（手机端拼好的完整 prompt + 填充滑窗）
-            const transcript = renderTranscript(rec.recentMessages);
+            let transcript = renderTranscript(rec.recentMessages);
             // 🧠 直连第三方记忆 MCP 检索（关软件也能用最新记忆）；失败/无配置 → 空串不阻断生成。
             let memory = '';
             try {
@@ -134,6 +135,20 @@ export async function runProactiveTick(env) {
                 );
             } catch (e) {
                 console.warn('[proactive] memory context failed:', e?.message);
+            }
+            // 🛠️ 主动用工具（action-mode MCP tool-loop）：用户开了 mcpProactiveToolUse 时，角色主动开口前
+            //    先决策是否调工具（搜热搜/新闻等），把素材拼进转录。受 tick 墙钟预算约束（deadline 到点即停），
+            //    失败静默降级不挡生成。与手机端 prefetchMcpToolResults(proactiveMode) 同语义。
+            if (rec.mcpProactiveToolUse && Array.isArray(rec.mcpToolServers) && rec.mcpToolServers.length) {
+                try {
+                    const enrichment = await runProactiveToolLoop(
+                        rec.mcpToolServers, rec.recentMessages, rec.aiSettings,
+                        { userId: rec.userId, characterId: rec.charId, deadline: tickStart + TICK_WALL_BUDGET_MS }
+                    );
+                    if (enrichment) transcript = transcript + enrichment;
+                } catch (e) {
+                    console.warn('[proactive] tool loop failed:', e?.message);
+                }
             }
             // 先填即时真时间哨兵（§NOW_*§），再填滑窗/理由/记忆占位符。
             const timedTemplate = renderTimeTokens(rec.promptTemplate, rec.timeSpec, now, rec.lastInteractionAt || 0);
