@@ -328,15 +328,25 @@ export function isLikelyNuojijiReply(text) {
     return /<thinking>[\s\S]*<\/thinking>/i.test(value) && jsonReplyLines >= 1;
 }
 
-function buildGeminiEndpoint(baseUrl = DEFAULT_COORDINATOR_BASE_URL, model = DEFAULT_COORDINATOR_MODEL) {
+function ensureGeminiSseAlt(url) {
+    if (/[?&]alt=sse(?:&|$)/i.test(url)) return url;
+    return `${url}${url.includes('?') ? '&' : '?'}alt=sse`;
+}
+
+function buildGeminiEndpoint(baseUrl = DEFAULT_COORDINATOR_BASE_URL, model = DEFAULT_COORDINATOR_MODEL, { stream = true } = {}) {
     let base = String(baseUrl || DEFAULT_COORDINATOR_BASE_URL).replace(/\/+$/, '');
     if (!base) throw new Error('Gemini coordinator base URL is not configured');
     base = base.replace(/\/openai$/i, '');
-    if (/\/models\/[^/]+:generateContent$/i.test(base)) return base;
+    const suffix = stream ? ':streamGenerateContent' : ':generateContent';
+    if (/\/models\/[^/]+:(?:generateContent|streamGenerateContent)(?:\?.*)?$/i.test(base)) {
+        const endpoint = base.replace(/:(?:generateContent|streamGenerateContent)(?:\?.*)?$/i, suffix);
+        return stream ? ensureGeminiSseAlt(endpoint) : endpoint;
+    }
     const modelPath = String(model || DEFAULT_COORDINATOR_MODEL).startsWith('models/')
         ? String(model || DEFAULT_COORDINATOR_MODEL)
         : `models/${model || DEFAULT_COORDINATOR_MODEL}`;
-    return `${base}/${modelPath}:generateContent`;
+    const endpoint = `${base}/${modelPath}${suffix}`;
+    return stream ? ensureGeminiSseAlt(endpoint) : endpoint;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -345,6 +355,91 @@ function isRetryableGeminiError(error) {
     if (error?.retryable) return true;
     const status = Number(error?.status) || 0;
     return RETRYABLE_GEMINI_STATUSES.has(status);
+}
+
+function mergeGeminiTextPart(parts, part) {
+    if (
+        part
+        && typeof part.text === 'string'
+        && Object.keys(part).length === 1
+        && parts.length > 0
+        && parts[parts.length - 1]
+        && typeof parts[parts.length - 1].text === 'string'
+        && Object.keys(parts[parts.length - 1]).length === 1
+    ) {
+        parts[parts.length - 1].text += part.text;
+        return;
+    }
+    parts.push(structuredClone(part));
+}
+
+function mergeGeminiCandidate(target, candidate, fallbackIndex = 0) {
+    const index = Number.isInteger(candidate?.index) ? candidate.index : fallbackIndex;
+    const merged = target.get(index) || { index, content: { role: 'model', parts: [] } };
+    for (const [key, value] of Object.entries(candidate || {})) {
+        if (key === 'content' || key === 'index' || value == null) continue;
+        merged[key] = structuredClone(value);
+    }
+    const content = candidate?.content;
+    if (content?.role) merged.content.role = content.role;
+    if (Array.isArray(content?.parts)) {
+        for (const part of content.parts) {
+            if (!isPlainObject(part)) continue;
+            mergeGeminiTextPart(merged.content.parts, part);
+        }
+    }
+    target.set(index, merged);
+}
+
+function geminiStreamBodyFromText(rawText) {
+    const body = {};
+    const candidates = new Map();
+    const normalized = String(rawText || '').replace(/\r\n/g, '\n');
+    for (const eventText of normalized.split(/\n\n+/)) {
+        const dataLines = [];
+        for (const rawLine of eventText.split('\n')) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith(':')) continue;
+            if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (dataLines.length === 0) continue;
+        const payloadText = dataLines.join('\n').trim();
+        if (!payloadText || payloadText === '[DONE]') continue;
+        let payload;
+        try { payload = JSON.parse(payloadText); } catch { continue; }
+        if (!isPlainObject(payload)) continue;
+        if (isPlainObject(payload.error)) {
+            const error = new Error(`Gemini coordinator stream error: ${payload.error.message || JSON.stringify(payload.error).slice(0, 300)}`);
+            error.status = Number(payload.error.code || payload.error.status_code) || 0;
+            error.transport = 'streamGenerateContent';
+            throw error;
+        }
+        for (const key of ['usageMetadata', 'promptFeedback', 'responseId', 'modelVersion']) {
+            if (payload[key]) body[key] = structuredClone(payload[key]);
+        }
+        if (Array.isArray(payload.candidates)) {
+            payload.candidates.forEach((candidate, index) => {
+                if (isPlainObject(candidate)) mergeGeminiCandidate(candidates, candidate, index);
+            });
+        }
+    }
+    if (candidates.size > 0) {
+        body.candidates = [...candidates.keys()].sort((a, b) => a - b).map((index) => candidates.get(index));
+    }
+    return body;
+}
+
+function parseGeminiCoordinatorResponse(rawText, contentType = '') {
+    const text = String(rawText || '');
+    if (/text\/event-stream/i.test(contentType) || /^\s*(?::|data:)/m.test(text)) {
+        const body = geminiStreamBodyFromText(text);
+        return { body, transport: 'streamGenerateContent' };
+    }
+    try {
+        return { body: JSON.parse(text), transport: 'generateContent' };
+    } catch {
+        return { body: { rawText: text }, transport: 'generateContent' };
+    }
 }
 
 async function callGeminiGenerateContentOnce({
@@ -359,7 +454,7 @@ async function callGeminiGenerateContentOnce({
     timeoutMs,
     fetchImpl = fetch,
 }) {
-    const endpoint = buildGeminiEndpoint(baseUrl, model);
+    const endpoint = buildGeminiEndpoint(baseUrl, model, { stream: true });
     assertSafeApiUrl(endpoint);
 
     const body = {
@@ -402,18 +497,26 @@ async function callGeminiGenerateContentOnce({
     }
 
     const rawText = await response.text();
-    let data;
-    try { data = JSON.parse(rawText); } catch { data = { rawText }; }
+    let parsed;
+    try {
+        parsed = parseGeminiCoordinatorResponse(rawText, response.headers?.get?.('content-type') || '');
+    } catch (error) {
+        if (!error.status) error.status = response.status;
+        throw error;
+    }
+    const data = parsed.body;
     if (!response.ok) {
         const detail = typeof rawText === 'string' ? rawText.slice(0, 800) : JSON.stringify(data).slice(0, 800);
         const error = new Error(`Gemini coordinator HTTP ${response.status}: ${detail}`);
         error.status = response.status;
+        error.transport = parsed.transport;
         throw error;
     }
     const candidate = data?.candidates?.[0];
     if (!candidate?.content?.parts) {
         throw new Error(`Gemini coordinator returned no candidate content: ${JSON.stringify(data).slice(0, 500)}`);
     }
+    Object.defineProperty(candidate, '_transport', { value: parsed.transport, enumerable: false });
     return candidate;
 }
 
@@ -429,6 +532,7 @@ async function callGeminiGenerateContent(options) {
                 attempt: attempt + 1,
                 max_attempts: retryAttempts + 1,
                 ok: true,
+                transport: candidate?._transport || 'streamGenerateContent',
             });
             return candidate;
         } catch (error) {
@@ -440,6 +544,7 @@ async function callGeminiGenerateContent(options) {
                 ok: false,
                 status: Number(error?.status) || null,
                 retryable,
+                transport: error?.transport || 'streamGenerateContent',
                 error: String(error?.message || error).slice(0, 300),
             });
             if (attempt >= retryAttempts || !retryable) break;

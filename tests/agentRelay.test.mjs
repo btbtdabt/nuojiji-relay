@@ -656,7 +656,188 @@ testCoordinatorQueryHintIgnoresProactivePlaceholder();
 testCoordinatorQueryHintPrefersRealUserText();
 testNuojijiReplyDetector();
 testGeminiFunctionResponseUsesUserRole();
+async function testCoordinatorParsesStreamingNoRelevantInfo() {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (body.method === 'initialize') {
+            return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+                status: 200,
+                headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
+            });
+        }
+        if (body.method === 'notifications/initialized') {
+            return new Response('', { status: 202 });
+        }
+        if (body.method === 'tools/list') {
+            return new Response(JSON.stringify({
+                jsonrpc: '2.0',
+                id: body.id,
+                result: {
+                    tools: [{
+                        name: 'breath',
+                        description: 'Read memory.',
+                        inputSchema: { type: 'object', properties: {} },
+                    }],
+                },
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        throw new Error(`unexpected MCP method ${body.method}`);
+    };
+
+    let sawStreamEndpoint = false;
+    const geminiFetch = async (url) => {
+        sawStreamEndpoint = /:streamGenerateContent\?alt=sse$/.test(String(url));
+        const event = {
+            candidates: [{
+                content: {
+                    role: 'model',
+                    parts: [{ text: 'NO_RELEVANT_INFO' }],
+                },
+            }],
+        };
+        return new Response(`: gateway-start\n\ndata: ${JSON.stringify(event)}\n\n`, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+        });
+    };
+
+    try {
+        const result = await runOmbreCoordinator({
+            messages: [{ role: 'user', content: 'hello' }],
+            mcpServer: { url: 'https://brain.example.com/mcp', auth: { type: 'none' } },
+            apiKey: 'coordinator-key',
+            baseUrl: 'https://gateway.example.com/v1beta',
+            model: 'gemini-3.5-flash',
+            fetchImpl: geminiFetch,
+            timeoutMs: 1000,
+        });
+
+        assert.equal(sawStreamEndpoint, true);
+        assert.equal(result.relevantInfo, '');
+        assert.equal(result.debug.gemini_attempts[0].transport, 'streamGenerateContent');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testCoordinatorStreamingToolLoopPreservesThoughtSignature() {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (body.method === 'initialize') {
+            return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+                status: 200,
+                headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
+            });
+        }
+        if (body.method === 'notifications/initialized') {
+            return new Response('', { status: 202 });
+        }
+        if (body.method === 'tools/list') {
+            return new Response(JSON.stringify({
+                jsonrpc: '2.0',
+                id: body.id,
+                result: {
+                    tools: [{
+                        name: 'breath',
+                        description: 'Read memory.',
+                        inputSchema: {
+                            type: 'object',
+                            properties: { query: { type: 'string' } },
+                        },
+                    }],
+                },
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        if (body.method === 'tools/call') {
+            assert.equal(body.params.name, 'breath');
+            assert.deepEqual(body.params.arguments, { query: '海鲜' });
+            return new Response(JSON.stringify({
+                jsonrpc: '2.0',
+                id: body.id,
+                result: {
+                    content: [{ type: 'text', text: '艾米喜欢海鲜，但不喜欢海鲜市场气味。' }],
+                    isError: false,
+                },
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        throw new Error(`unexpected MCP method ${body.method}`);
+    };
+
+    const geminiBodies = [];
+    const geminiFetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body || '{}'));
+        geminiBodies.push(body);
+        if (geminiBodies.length === 1) {
+            const event = {
+                candidates: [{
+                    content: {
+                        role: 'model',
+                        parts: [{
+                            thoughtSignature: 'signed-thought',
+                            functionCall: {
+                                name: 'breath',
+                                args: { query: '海鲜' },
+                            },
+                        }],
+                    },
+                }],
+            };
+            return new Response(`data: ${JSON.stringify(event)}\n\n`, {
+                status: 200,
+                headers: { 'content-type': 'text/event-stream' },
+            });
+        }
+        const event = {
+            candidates: [{
+                content: {
+                    role: 'model',
+                    parts: [{ text: 'Relevant info: 艾米喜欢海鲜，但不喜欢海鲜市场气味。' }],
+                },
+            }],
+        };
+        return new Response(`data: ${JSON.stringify(event)}\n\n`, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+        });
+    };
+
+    try {
+        const result = await runOmbreCoordinator({
+            messages: [{ role: 'user', content: '我喜欢吃什么' }],
+            mcpServer: { url: 'https://brain.example.com/mcp', auth: { type: 'none' } },
+            apiKey: 'coordinator-key',
+            baseUrl: 'https://gateway.example.com/v1beta',
+            model: 'gemini-3.5-flash',
+            fetchImpl: geminiFetch,
+            timeoutMs: 1000,
+        });
+
+        assert.match(result.relevantInfo, /艾米喜欢海鲜/);
+        assert.equal(result.debug.calls[0].name, 'breath');
+        assert.equal(result.debug.calls[0].ok, true);
+        assert.equal(geminiBodies.length, 2);
+        assert.equal(geminiBodies[1].contents[1].parts[0].thoughtSignature, 'signed-thought');
+        assert.deepEqual(geminiBodies[1].contents[1].parts[0].functionCall.args, { query: '海鲜' });
+        assert.equal(geminiBodies[1].contents[2].parts[0].functionResponse.name, 'breath');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 await testAgentStreamUsesSeparateStopChunk();
+await testCoordinatorParsesStreamingNoRelevantInfo();
+await testCoordinatorStreamingToolLoopPreservesThoughtSignature();
 await testCoordinatorRetriesTransientGeminiFailures();
 await testCoordinatorFailureSkipsFinalModel();
 await testMissingCoordinatorConfigSkipsFinalModel();
