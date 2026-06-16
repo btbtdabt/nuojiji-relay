@@ -8,9 +8,17 @@
 //   - Node 默认：内存 Map + 定时 sweep                          见 memoryOutboxStore.js
 //   - Node 持久（RELAY_STORE=sqlite）：better-sqlite3            见 sqliteOutboxStore.js
 //
-// TTL 默认 45 分钟（手机离线超过这个时长，结果会被清掉 → 丢失，可在环境里调大）。
+// TTL 默认 6 小时（手机离线/没排水超过这个时长，结果会被清掉 → 丢失）。
+//   从 45min 调大到 6h：大陆用户常隔很久才打开 App（且中继域名可能时通时不通），45min 太短，
+//   一觉醒来 outbox 已被清 = 「推送有、点进去没消息」的次因。可用环境变量 OUTBOX_TTL_MIN 覆盖。
+export const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
 
-export const DEFAULT_TTL_MS = 45 * 60 * 1000;
+// 从 env 解析 TTL（分钟）→ 毫秒；非法/缺省回退 DEFAULT_TTL_MS。KV expirationTtl 最低 60s。
+export function resolveTtlMs(env) {
+    const min = parseInt(env?.OUTBOX_TTL_MIN, 10);
+    if (Number.isFinite(min) && min > 0) return Math.max(60 * 1000, min * 60 * 1000);
+    return DEFAULT_TTL_MS;
+}
 
 // 同时跟踪 requestId 去重：已处理过的 requestId 在 TTL 内拒绝重复 /generate（返回 409）。
 // 各实现内部维护一个 requestId→createdAt 的小表。

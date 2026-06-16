@@ -62,6 +62,13 @@ function parseStoredPair(kv) {
     return JSON.parse(kv.map.get('p:inbox:user:char'));
 }
 
+function assertTickResult(actual, expected) {
+    assert.deepEqual(actual, {
+        ...expected,
+        processed: expected.processed ?? expected.pairs,
+    });
+}
+
 function testUpgradeProactiveImageSchema() {
     const source = [
         'Narration NOW → {"t":"state","c":"..."}. Image NOW → {"t":"image","d":"..."}. Simulated image → {"t":"sim_img",...}.',
@@ -144,7 +151,7 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
         assert.equal(registerRes.status, 200);
 
         const firstTick = await runProactiveTick(env);
-        assert.deepEqual(firstTick, { pairs: 1, fired: 1 });
+        assertTickResult(firstTick, { pairs: 1, fired: 1 });
         assert.equal(aiRequests.length, 1);
         assert.equal(aiRequests[0].messages.length, 1);
         assert.equal(aiRequests[0].messages[0].role, 'system');
@@ -183,7 +190,7 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
 
         now += Math.max(BACKEND_FIRE_COOLDOWN_MS, 31 * 60_000);
         const secondTick = await runProactiveTick(env);
-        assert.deepEqual(secondTick, { pairs: 1, fired: 1 });
+        assertTickResult(secondTick, { pairs: 1, fired: 1 });
         assert.equal(aiRequests.length, 2);
         assert.equal(aiRequests[1].messages.length, 1);
         assert.equal(aiRequests[1].messages[0].role, 'system');
@@ -274,7 +281,7 @@ async function testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration() {
         assert.equal(registerRes.status, 200);
 
         const tick = await runProactiveTick(env);
-        assert.deepEqual(tick, { pairs: 1, fired: 0 });
+        assertTickResult(tick, { pairs: 1, fired: 0 });
         assert.equal(aiRequests.length, 1);
 
         const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
@@ -297,7 +304,7 @@ async function testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration() {
     }
 }
 
-async function testIntervalModeCanFireBelowBackendImpulseCooldown() {
+async function testIntervalModeRespectsBackendCooldown() {
     const app = createApp();
     const kv = new FakeKv();
     const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
@@ -346,9 +353,11 @@ async function testIntervalModeCanFireBelowBackendImpulseCooldown() {
         });
         assert.equal(registerRes.status, 200);
 
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
         now += 61_000;
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        now += BACKEND_FIRE_COOLDOWN_MS;
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
         assert.equal(aiRequests.length, 2);
 
         const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
@@ -409,11 +418,11 @@ async function testTickSkipsShortlyAfterUserInteraction() {
         });
         assert.equal(registerRes.status, 200);
 
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
         assert.equal(aiRequests.length, 0);
 
         now += PROACTIVE_USER_REPLY_GRACE_MS;
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
         assert.equal(aiRequests.length, 1);
     } finally {
         Date.now = originalNow;
@@ -444,10 +453,10 @@ async function testGenerateImmediatelyUpdatesProactiveInteractionState() {
         assert.equal(storedDuringGenerate.generationStartedAt, now);
         assert.match(storedDuringGenerate.generationClaimId, /^reply_req-user-reply_/);
         assert.equal(storedDuringGenerate.lifeState.unansweredStreak, 0);
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
 
         now += PROACTIVE_USER_REPLY_GRACE_MS + 1_000;
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
 
         return new Response(JSON.stringify({
             choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'normal reply' }) } }],
@@ -508,8 +517,8 @@ async function testGenerateImmediatelyUpdatesProactiveInteractionState() {
 
         const stored = parseStoredPair(kv);
         assert.equal(stored.lastInteractionAt, now);
-        assert.equal(stored.generationStartedAt, 0);
-        assert.equal(stored.generationClaimId, null);
+        assert.equal(stored.generationStartedAt || 0, 0);
+        assert.equal(stored.generationClaimId ?? null, null);
         assert.equal(stored.lifeState.unansweredStreak, 0);
         assert.deepEqual(stored.recentMessages, [
             { sender: 'char', text: 'old proactive' },
@@ -730,17 +739,17 @@ async function testPendingCommitmentsGateProactiveTick() {
         let stored = parseStoredPair(kv);
         stored.pendingCommitments = [{ t: 'commitment', kind: 'activity', at: '+5min', hint: '换衣服', dueAt: now + 5 * 60_000, createdAt: now }];
         await kv.put('p:inbox:user:char', JSON.stringify(stored));
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
 
         stored = parseStoredPair(kv);
         stored.pendingCommitments = [{ t: 'commitment', kind: 'promise', at: '+30min', hint: '发照片', dueAt: now + 30 * 60_000, createdAt: now }];
         await kv.put('p:inbox:user:char', JSON.stringify(stored));
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
 
         stored = parseStoredPair(kv);
         stored.pendingCommitments = [{ t: 'commitment', kind: 'promise', at: '+2h', hint: '发方案', dueAt: now + 2 * 60 * 60_000, createdAt: now }];
         await kv.put('p:inbox:user:char', JSON.stringify(stored));
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
         assert.equal(aiRequests.length, 1);
         assert.match(aiRequests[0].messages[0].content, /\[PENDING_COMMITMENTS_FROM_RELAY\]/);
         assert.match(aiRequests[0].messages[0].content, /Do not complete a future commitment before its due time/);
@@ -812,7 +821,7 @@ async function testProactiveGenerationErrorDoesNotConsumeFireCooldown() {
         await kv.put('p:inbox:user:char', JSON.stringify(beforeFailure));
         await kv.put('pf:inbox:user:char', String(beforeFailure.lastFiredAt));
 
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
         assert.equal(fetchCalls, 1);
 
         const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
@@ -821,8 +830,8 @@ async function testProactiveGenerationErrorDoesNotConsumeFireCooldown() {
         const stored = parseStoredPair(kv);
         assert.equal(stored.lastFiredAt, beforeFailure.lastFiredAt);
         assert.equal(stored.lastInteractionAt, beforeFailure.lastInteractionAt);
-        assert.equal(stored.generationStartedAt, 0);
-        assert.equal(stored.generationClaimId, null);
+        assert.equal(stored.generationStartedAt || 0, 0);
+        assert.equal(stored.generationClaimId ?? null, null);
         assert.equal(stored.lifeState.unansweredStreak, 1);
     } finally {
         Date.now = originalNow;
@@ -889,7 +898,7 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
         stored.generationClaimId = 'still-running';
         await kv.put('p:inbox:user:char', JSON.stringify(stored));
 
-        assert.deepEqual(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
         assert.equal(aiRequests.length, 0);
     } finally {
         Date.now = originalNow;
@@ -901,7 +910,7 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
 testUpgradeProactiveImageSchema();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
-await testIntervalModeCanFireBelowBackendImpulseCooldown();
+await testIntervalModeRespectsBackendCooldown();
 await testTickSkipsShortlyAfterUserInteraction();
 await testGenerateImmediatelyUpdatesProactiveInteractionState();
 await testGenerateDoesNotAppendCoordinatorErrorsToProactiveWindow();

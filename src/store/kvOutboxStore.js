@@ -10,14 +10,15 @@
 //   item: `o:<inboxId>:<id>`         → JSON item
 //   reqId: `r:<requestId>`           → 去重标记
 
-import { DEFAULT_TTL_MS } from './outboxStore.js';
-
-const TTL_SEC = Math.floor(DEFAULT_TTL_MS / 1000);
+import { resolveTtlMs } from './outboxStore.js';
 
 export class KvOutboxStore {
-    constructor(kv) {
+    constructor(kv, env) {
         this.kv = kv;
         this.kind = 'kv';
+        // TTL 可由 env.OUTBOX_TTL_MIN 覆盖（默认 6h）。索引剪枝与 KV expirationTtl 都用它。
+        this.ttlMs = resolveTtlMs(env);
+        this.ttlSec = Math.floor(this.ttlMs / 1000);
     }
 
     async seenRequest(requestId) {
@@ -26,7 +27,7 @@ export class KvOutboxStore {
     }
 
     async markRequest(requestId) {
-        await this.kv.put(`r:${requestId}`, '1', { expirationTtl: TTL_SEC });
+        await this.kv.put(`r:${requestId}`, '1', { expirationTtl: this.ttlSec });
     }
 
     async _getIndex(inboxId) {
@@ -37,9 +38,9 @@ export class KvOutboxStore {
 
     async _putIndex(inboxId, idx) {
         // 索引也按 TTL 过期；顺手剔除超 TTL 的条目，防止无限增长
-        const cutoff = Date.now() - DEFAULT_TTL_MS;
+        const cutoff = Date.now() - this.ttlMs;
         const pruned = idx.filter((e) => e.createdAt > cutoff);
-        await this.kv.put(`idx:${inboxId}`, JSON.stringify(pruned), { expirationTtl: TTL_SEC });
+        await this.kv.put(`idx:${inboxId}`, JSON.stringify(pruned), { expirationTtl: this.ttlSec });
     }
 
     async _listItemsByPrefix(inboxId) {
@@ -67,7 +68,7 @@ export class KvOutboxStore {
     }
 
     async put(inboxId, item) {
-        await this.kv.put(`o:${inboxId}:${item.id}`, JSON.stringify(item), { expirationTtl: TTL_SEC });
+        await this.kv.put(`o:${inboxId}:${item.id}`, JSON.stringify(item), { expirationTtl: this.ttlSec });
         const idx = await this._getIndex(inboxId);
         // 去重（同 id 不重复追加）
         if (!idx.some((e) => e.id === item.id)) idx.push({ id: item.id, createdAt: item.createdAt });
@@ -76,6 +77,12 @@ export class KvOutboxStore {
     }
 
     async list(inboxId, sinceTs = 0) {
+        // ⚠️ 不能只信索引 idx:<inboxId>：put() 的「读索引→push→写索引」是非原子 read-modify-write，
+        //    KV 无事务。两个 put 并发（如用户回复 + 同对 proactive tick，或连发两条）会互相覆盖索引：
+        //    A 读到[]、B 读到[]、A 写[A]、B 写[B] → A 的索引条目丢失，但 o:inbox:A 数据还在 →
+        //    list 永远返回不了 A → 「推送弹了、点进去没消息」（与网络无关，自有域名用户也中招）。
+        //    修：除了走索引，再用 kv.list({prefix}) 兜底扫一遍 o:<inboxId>: 实际存在的 item key，
+        //    两路按 id 去重合并。索引(强一致)抓最新刚 put 的；prefix-list(最终一致)抓被索引覆盖丢的。
         const idx = await this._getIndex(inboxId);
         const itemsById = new Map();
         const liveIndex = [];

@@ -478,11 +478,14 @@ async function testKvPatchReplyGenerationClaimClearsFireMirrorStreak() {
 
     assert.equal(result.changed, true);
     const stored = JSON.parse(await kv.get('p:inbox:user:char'));
-    assert.equal(stored.lastFiredAt, 50_000);
+    assert.equal(stored.lastFiredAt, 30_000);
     assert.equal(stored.lastInteractionAt > 50_000, true);
     assert.equal(stored.lifeState.lastImpulseAt, 50_000);
     assert.equal(stored.lifeState.lastProactiveSentAt, 50_000);
     assert.equal(stored.lifeState.unansweredStreak, 0);
+
+    const mirrored = await store.get('inbox', 'user', 'char');
+    assert.equal(mirrored.lastFiredAt, 50_000);
 }
 
 async function testKvFireMirrorCountsOneMissedFire() {
@@ -557,7 +560,7 @@ async function testKvPatchRepairsStaleRuntimeStateFromFireMirror() {
     assert.equal(result.changed, true);
 
     const stored = JSON.parse(await kv.get('p:inbox:user:char'));
-    assert.equal(stored.lastFiredAt, 30_000);
+    assert.equal(stored.lastFiredAt, 10_000);
     assert.equal(stored.lastInteractionAt, 40_000);
     assert.equal(stored.generationStartedAt, 0);
     assert.equal(stored.generationClaimId, null);
@@ -566,6 +569,9 @@ async function testKvPatchRepairsStaleRuntimeStateFromFireMirror() {
     assert.equal(stored.lifeState.lastProactiveSentAt, 30_000);
     assert.equal(stored.notifPrivacy, true);
     assert.equal(kv.putCalls.some((call) => call.key === 'p:inbox:user:char'), true);
+
+    const mirrored = await store.get('inbox', 'user', 'char');
+    assert.equal(mirrored.lastFiredAt, 30_000);
 }
 
 async function testKvPatchRepairsRuntimeStateWhenFireAlreadyMirrored() {
@@ -642,12 +648,15 @@ async function testKvNoopPatchRepairsStaleRuntimeStateFromFireMirror() {
 
     const stored = JSON.parse(await kv.get('p:inbox:user:char'));
     assert.equal(stored.notifPrivacy, false);
-    assert.equal(stored.lastFiredAt, 30_000);
+    assert.equal(stored.lastFiredAt, 10_000);
     assert.equal(stored.generationStartedAt, 0);
     assert.equal(stored.generationClaimId, null);
     assert.equal(stored.lifeState.lastImpulseAt, 30_000);
     assert.equal(stored.lifeState.lastProactiveSentAt, 30_000);
     assert.equal(kv.putCalls.some((call) => call.key === 'p:inbox:user:char'), true);
+
+    const mirrored = await store.get('inbox', 'user', 'char');
+    assert.equal(mirrored.lastFiredAt, 30_000);
 }
 
 async function testKvDuplicateUpsertRepairsMissingIndex() {

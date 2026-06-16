@@ -19,3 +19,8 @@ RELAY_SECRET=
 # AGENT_FINAL_API_TYPE=openai
 # AGENT_DEBUG_FULL_PROMPT=1
 # AGENT_DEBUG_FULL_LIMIT_CHARS=200000
+
+# 【可选】outbox 结果保留时长（分钟），默认 360（6 小时）。
+# 手机离线/没排水超过这个时长，已生成的消息会被清掉 → 丢失。
+# 大陆用户常隔很久才开 App，可调更大（如 1440 = 一天）。KV 最低 60s。
+# OUTBOX_TTL_MIN=360

@@ -29,7 +29,67 @@ export class SqliteProactiveStore {
                 inboxId     TEXT PRIMARY KEY,
                 pausedUntil INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS proactive_fire (
+                pairKey     TEXT PRIMARY KEY,
+                lastFiredAt INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS tick_lock (
+                id        INTEGER PRIMARY KEY CHECK (id = 1),
+                lockUntil INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS tick_cursor (
+                id     INTEGER PRIMARY KEY CHECK (id = 1),
+                cursor INTEGER NOT NULL
+            );
         `);
+    }
+    async getTickCursor() {
+        const row = this.db.prepare('SELECT cursor FROM tick_cursor WHERE id = 1').get();
+        return row ? Number(row.cursor) || 0 : 0;
+    }
+    async setTickCursor(n) {
+        this.db.prepare('INSERT OR REPLACE INTO tick_cursor (id, cursor) VALUES (1, ?)').run(Number(n) || 0);
+    }
+    // 🔒 lastFiredAt 独立表（与 data blob 的 patch 分开）：防 sync-messages 覆盖 cron 抢槽 = 重复主动消息。
+    async claimFire(inboxId, userId, charId, now) {
+        const key = makePairKey(inboxId, userId, charId);
+        const ts = now === undefined ? Date.now() : (Number(now) || 0);
+        if (ts <= 0) {
+            this.db.prepare('DELETE FROM proactive_fire WHERE pairKey = ?').run(key);
+        } else {
+            this.db.prepare('INSERT OR REPLACE INTO proactive_fire (pairKey, lastFiredAt) VALUES (?,?)')
+                .run(key, ts);
+        }
+        return true;
+    }
+    // 🔒 条件抢占（CAS，防两轮重叠 cron 同一对双发）。better-sqlite3 同步执行，进程内真原子。
+    async claimFireIfStale(inboxId, userId, charId, now, cooldownMs) {
+        const key = makePairKey(inboxId, userId, charId);
+        const row = this.db.prepare('SELECT lastFiredAt FROM proactive_fire WHERE pairKey = ?').get(key);
+        const prev = row ? Number(row.lastFiredAt) || 0 : 0;
+        if (prev && (now - prev) < cooldownMs) return false;
+        this.db.prepare('INSERT OR REPLACE INTO proactive_fire (pairKey, lastFiredAt) VALUES (?,?)')
+            .run(key, now || Date.now());
+        return true;
+    }
+    async getLastFired(inboxId, userId, charId) {
+        const row = this.db.prepare('SELECT lastFiredAt FROM proactive_fire WHERE pairKey = ?')
+            .get(makePairKey(inboxId, userId, charId));
+        return row ? Number(row.lastFiredAt) || 0 : 0;
+    }
+    // 🔒 tick 重入锁（node-cron 已有 _ticking 兜底，这里与 KV 接口对齐多一层）
+    async acquireTickLock(ttlMs = 120000) {
+        const row = this.db.prepare('SELECT lockUntil FROM tick_lock WHERE id = 1').get();
+        if (row && Number(row.lockUntil) > Date.now()) return false;
+        this.db.prepare('INSERT OR REPLACE INTO tick_lock (id, lockUntil) VALUES (1, ?)').run(Date.now() + ttlMs);
+        return true;
+    }
+    async releaseTickLock() { this.db.prepare('DELETE FROM tick_lock WHERE id = 1').run(); }
+    _mergeFire(rec) {
+        const row = this.db.prepare('SELECT lastFiredAt FROM proactive_fire WHERE pairKey = ?')
+            .get(makePairKey(rec.inboxId, rec.userId, rec.charId));
+        if (row) rec.lastFiredAt = Number(row.lastFiredAt) || 0;
+        return rec;
     }
     // inbox 级暂停：走线下剧情时手机端调 /proactive/pause，tick 跳过该 inbox 的所有 pair。
     async setPause(inboxId, pausedUntil) {
@@ -74,16 +134,18 @@ export class SqliteProactiveStore {
         return { changed: true, record: merged };
     }
     async remove(inboxId, userId, charId) {
-        this.db.prepare('DELETE FROM proactive WHERE pairKey = ?').run(makePairKey(inboxId, userId, charId));
+        const k = makePairKey(inboxId, userId, charId);
+        this.db.prepare('DELETE FROM proactive WHERE pairKey = ?').run(k);
+        this.db.prepare('DELETE FROM proactive_fire WHERE pairKey = ?').run(k);
     }
     async listEnabled() {
-        return this.db.prepare('SELECT data FROM proactive WHERE enabled = 1').all().map(r => JSON.parse(r.data));
+        return this.db.prepare('SELECT data FROM proactive WHERE enabled = 1').all().map(r => this._mergeFire(JSON.parse(r.data)));
     }
     async listByInbox(inboxId) {
-        return this.db.prepare('SELECT data FROM proactive WHERE inboxId = ?').all(inboxId).map(r => JSON.parse(r.data));
+        return this.db.prepare('SELECT data FROM proactive WHERE inboxId = ?').all(inboxId).map(r => this._mergeFire(JSON.parse(r.data)));
     }
     async get(inboxId, userId, charId) {
         const row = this.db.prepare('SELECT data FROM proactive WHERE pairKey = ?').get(makePairKey(inboxId, userId, charId));
-        return row ? JSON.parse(row.data) : null;
+        return row ? this._mergeFire(JSON.parse(row.data)) : null;
     }
 }

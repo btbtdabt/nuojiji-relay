@@ -8,6 +8,8 @@
 //
 // callTool 保持旧行为：每次完整握手。Agent Relay 用 createMcpSession 复用同一会话。
 
+import { assertSafeApiUrl } from '../ai/requestBuilder.js';
+
 const PROTOCOL_VERSION = '2025-03-26';
 const CLIENT_INFO = { name: 'nuojiji-relay', version: '1.0.0' };
 const DEFAULT_TIMEOUT_MS = 45000;
@@ -153,6 +155,9 @@ export function mcpContentToText(content) {
  */
 export async function callTool(server, name, args = {}, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     if (!server?.url) throw new Error('MCP server url missing');
+    // 🛡️ SSRF 防护：MCP url 是用户注册时传来的任意地址，后端直连 → 必须挡内网/云元数据
+    //   (169.254.169.254 / 10.x / localhost 等)，与 aiCaller 对 AI url 同款校验（之前这里漏了）。
+    assertSafeApiUrl(server.url);
     const { sessionId } = await handshake(server, timeoutMs);
     const { result } = await sendRequest(server, {
         jsonrpc: '2.0', id: 3, method: 'tools/call',
