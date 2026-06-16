@@ -417,7 +417,7 @@ async function testKvFireMirrorRepairsRuntimeStateWhenUnanswered() {
 
     const rows = await store.listByInbox('inbox');
     assert.equal(rows[0].lastFiredAt, 30_000);
-    assert.equal(rows[0].lastInteractionAt, 30_000);
+    assert.equal(rows[0].lastInteractionAt, 15_000);
     assert.equal(rows[0].lifeState.lastImpulseAt, 30_000);
     assert.equal(rows[0].lifeState.lastProactiveSentAt, 30_000);
     assert.equal(rows[0].lifeState.unansweredStreak, 2);
@@ -600,7 +600,7 @@ async function testKvPatchRepairsRuntimeStateWhenFireAlreadyMirrored() {
 
     const stored = JSON.parse(await kv.get('p:inbox:user:char'));
     assert.equal(stored.lastFiredAt, 30_000);
-    assert.equal(stored.lastInteractionAt, 30_000);
+    assert.equal(stored.lastInteractionAt, 20_000);
     assert.equal(stored.generationStartedAt, 0);
     assert.equal(stored.generationClaimId, null);
     assert.equal(stored.lifeState.unansweredStreak, 1);
@@ -783,7 +783,7 @@ async function testKvGetAppliesFireMirror() {
 
     const stored = await store.get('inbox', 'user', 'char');
     assert.equal(stored.lastFiredAt, 30_000);
-    assert.equal(stored.lastInteractionAt, 30_000);
+    assert.equal(stored.lastInteractionAt, 0);
     assert.equal(stored.lifeState.unansweredStreak, 1);
 }
 

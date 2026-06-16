@@ -164,7 +164,7 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
             { sender: 'me', text: 'before' },
             { sender: 'char', text: 'server proactive' },
         ]);
-        assert.equal(afterFirstTick.lastInteractionAt, now);
+        assert.equal(afterFirstTick.lastInteractionAt, now - 60 * 60_000);
         assert.equal(afterFirstTick.lifeState.unansweredStreak, 1);
 
         const staleSyncRes = await postJson(app, env, '/proactive/sync-messages', {
@@ -820,7 +820,7 @@ async function testProactiveGenerationErrorDoesNotConsumeFireCooldown() {
 
         const stored = parseStoredPair(kv);
         assert.equal(stored.lastFiredAt, beforeFailure.lastFiredAt);
-        assert.equal(stored.lastInteractionAt, beforeFailure.lastFiredAt);
+        assert.equal(stored.lastInteractionAt, beforeFailure.lastInteractionAt);
         assert.equal(stored.generationStartedAt, 0);
         assert.equal(stored.generationClaimId, null);
         assert.equal(stored.lifeState.unansweredStreak, 1);
