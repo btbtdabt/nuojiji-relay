@@ -403,6 +403,17 @@ async function testAgentStreamUsesSeparateStopChunk() {
         const stopChunk = JSON.parse(lines[2].slice(5).trim());
         assert.deepEqual(stopChunk.choices[0].delta, {});
         assert.equal(stopChunk.choices[0].finish_reason, 'stop');
+
+        const events = await listAgentEvents(env, { limit: 5 });
+        const chatEvent = events.find((event) => event.type === 'agent_chat');
+        assert.equal(chatEvent.stage, 'complete');
+        assert.ok(chatEvent.timings.coordinator_ms >= 0);
+        assert.ok(chatEvent.timings.final_ms >= 0);
+        assert.ok(chatEvent.timings.total_ms >= 0);
+        assert.ok(chatEvent.coordinator.timings.mcp_session_ms >= 0);
+        assert.ok(chatEvent.coordinator.timings.mcp_list_tools_ms >= 0);
+        assert.ok(chatEvent.coordinator.timings.total_ms >= 0);
+        assert.ok(chatEvent.coordinator.gemini_attempts[0].duration_ms >= 0);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -902,6 +913,12 @@ async function testCoordinatorStreamingToolLoopPreservesThoughtSignature() {
         assert.match(result.relevantInfo, /艾米喜欢海鲜/);
         assert.equal(result.debug.calls[0].name, 'breath');
         assert.equal(result.debug.calls[0].ok, true);
+        assert.ok(result.debug.timings.mcp_session_ms >= 0);
+        assert.ok(result.debug.timings.mcp_list_tools_ms >= 0);
+        assert.ok(result.debug.timings.total_ms >= 0);
+        assert.ok(result.debug.gemini_attempts[0].duration_ms >= 0);
+        assert.ok(result.debug.gemini_attempts[1].duration_ms >= 0);
+        assert.ok(result.debug.calls[0].duration_ms >= 0);
         assert.equal(geminiBodies.length, 2);
         assert.equal(geminiBodies[1].contents[1].parts[0].thoughtSignature, 'signed-thought');
         assert.deepEqual(geminiBodies[1].contents[1].parts[0].functionCall.args, { query: '海鲜' });

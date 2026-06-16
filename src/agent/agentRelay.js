@@ -172,8 +172,10 @@ export async function handleAgentChatCompletions(c) {
     let relevantInfo = '';
     let coordinatorDebug = { skipped: '' };
     let coordinatorError = null;
+    const timings = {};
 
     if (coordinatorConfig.apiKey && coordinatorConfig.baseUrl && mcpServer?.url) {
+        const coordinatorStartedAt = Date.now();
         try {
             const result = await runOmbreCoordinator({
                 messages: body.messages,
@@ -188,6 +190,8 @@ export async function handleAgentChatCompletions(c) {
             coordinatorError = error;
             coordinatorDebug = error?.coordinatorDebug || coordinatorDebug;
             console.warn('[agentRelay] coordinator failed:', error?.message || error);
+        } finally {
+            timings.coordinator_ms = Date.now() - coordinatorStartedAt;
         }
     } else {
         coordinatorDebug = {
@@ -198,6 +202,7 @@ export async function handleAgentChatCompletions(c) {
                     : 'missing mcp server url',
         };
         coordinatorError = new CoordinatorUnavailableError(coordinatorDebug.skipped);
+        timings.coordinator_ms = 0;
     }
 
     if (coordinatorError) {
@@ -221,6 +226,7 @@ export async function handleAgentChatCompletions(c) {
                 relevantInfoChars: 0,
                 responseChars: content.length,
             },
+            timings: { ...timings, total_ms: Date.now() - startedAt },
             ...(debugFull ? {
                 full: {
                     original_messages: clipDebugValue(body.messages, debugCharLimit),
@@ -244,6 +250,7 @@ export async function handleAgentChatCompletions(c) {
             request: summarizeMessages(body.messages),
             coordinator: coordinatorDebug,
             error: { message: 'AGENT_FINAL_API_URL / AGENT_FINAL_API_KEY not configured on server' },
+            timings: { ...timings, total_ms: Date.now() - startedAt },
             durationMs: Date.now() - startedAt,
         });
         return c.json({
@@ -264,9 +271,12 @@ export async function handleAgentChatCompletions(c) {
         : undefined;
     const maxTokens = body.max_tokens || body.max_completion_tokens || body.maxTokens || null;
     let content;
+    const finalStartedAt = Date.now();
     try {
         content = await runGeneration(finalSettings, finalMessages, maxTokens);
+        timings.final_ms = Date.now() - finalStartedAt;
     } catch (error) {
+        timings.final_ms = Date.now() - finalStartedAt;
         await logAgentEvent(c.env, {
             type: 'agent_chat',
             ok: false,
@@ -281,6 +291,7 @@ export async function handleAgentChatCompletions(c) {
                 relevantInfoChars: relevantInfo.length,
             },
             error: debugError(error),
+            timings: { ...timings, total_ms: Date.now() - startedAt },
             ...(fullDebugPayload ? { full: fullDebugPayload } : {}),
             durationMs: Date.now() - startedAt,
         });
@@ -309,6 +320,7 @@ export async function handleAgentChatCompletions(c) {
             relevantInfoChars: relevantInfo.length,
             responseChars: String(content || '').length,
         },
+        timings: { ...timings, total_ms: Date.now() - startedAt },
         ...(fullDebugPayload ? { full: fullDebugPayload } : {}),
         durationMs: Date.now() - startedAt,
     });

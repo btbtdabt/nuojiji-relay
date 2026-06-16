@@ -627,6 +627,7 @@ async function callGeminiGenerateContent(options) {
     let lastError = null;
     for (let attempt = 0; attempt <= retryAttempts; attempt++) {
         if (attempt > 0) await sleep(Math.min(1000 * 2 ** (attempt - 1), 5000));
+        const attemptStartedAt = Date.now();
         try {
             const candidate = await callGeminiGenerateContentOnce(options);
             onAttempt?.({
@@ -634,6 +635,7 @@ async function callGeminiGenerateContent(options) {
                 max_attempts: retryAttempts + 1,
                 ok: true,
                 transport: candidate?._transport || 'streamGenerateContent',
+                duration_ms: Date.now() - attemptStartedAt,
             });
             return candidate;
         } catch (error) {
@@ -646,6 +648,7 @@ async function callGeminiGenerateContent(options) {
                 status: Number(error?.status) || null,
                 retryable,
                 transport: error?.transport || 'streamGenerateContent',
+                duration_ms: Date.now() - attemptStartedAt,
                 error: String(error?.message || error).slice(0, 300),
             });
             if (attempt >= retryAttempts || !retryable) break;
@@ -663,6 +666,11 @@ function attachCoordinatorDebug(error, debug) {
 function rememberCoordinatorError(debug, error) {
     const message = String(error?.message || error || '').slice(0, 500);
     if (message && !debug.errors.includes(message)) debug.errors.push(message);
+}
+
+function finalizeCoordinatorDebug(debug, startedAt) {
+    if (debug?.timings) debug.timings.total_ms = Date.now() - startedAt;
+    return debug;
 }
 
 function extractFunctionCalls(content) {
@@ -711,14 +719,20 @@ export async function runOmbreCoordinator({
     debugCharLimit = 200_000,
     fetchImpl,
 }) {
-    const debug = { skipped: '', tool_count: 0, rounds: 0, calls: [], errors: [], gemini_attempts: [] };
+    const coordinatorStartedAt = Date.now();
+    const debug = { skipped: '', tool_count: 0, rounds: 0, calls: [], errors: [], gemini_attempts: [], timings: {} };
     if (!apiKey) return { relevantInfo: '', skipped: 'missing coordinator api key', debug: { ...debug, skipped: 'missing coordinator api key' } };
     if (!baseUrl) return { relevantInfo: '', skipped: 'missing coordinator base url', debug: { ...debug, skipped: 'missing coordinator base url' } };
     if (!mcpServer?.url) return { relevantInfo: '', skipped: 'missing mcp server url', debug: { ...debug, skipped: 'missing mcp server url' } };
 
     try {
+        const mcpSessionStartedAt = Date.now();
         const mcp = await createMcpSession(mcpServer, { timeoutMs });
+        debug.timings.mcp_session_ms = Date.now() - mcpSessionStartedAt;
+
+        const mcpListToolsStartedAt = Date.now();
         const tools = await mcp.listTools();
+        debug.timings.mcp_list_tools_ms = Date.now() - mcpListToolsStartedAt;
         debug.tool_count = tools.length;
         if (debugFull) {
             debug.full = {
@@ -732,7 +746,10 @@ export async function runOmbreCoordinator({
             };
         }
         const { functionDeclarations, nameMap } = prepareGeminiFunctionDeclarations(tools);
-        if (functionDeclarations.length === 0) return { relevantInfo: '', skipped: 'no mcp tools', debug: { ...debug, skipped: 'no mcp tools' } };
+        if (functionDeclarations.length === 0) {
+            debug.skipped = 'no mcp tools';
+            return { relevantInfo: '', skipped: 'no mcp tools', debug: finalizeCoordinatorDebug(debug, coordinatorStartedAt) };
+        }
 
         const coordinatorInput = formatMessagesForCoordinator(messages, tools);
         const currentQuery = buildCoordinatorQueryHint(messages);
@@ -771,13 +788,15 @@ export async function runOmbreCoordinator({
                 if (debugFull) {
                     debug.full.coordinator_output = clipDebugValue(text, debugCharLimit);
                 }
-                if (!text || text.trim() === NO_RELEVANT_INFO) return { relevantInfo: '', debug };
+                if (!text || text.trim() === NO_RELEVANT_INFO) {
+                    return { relevantInfo: '', debug: finalizeCoordinatorDebug(debug, coordinatorStartedAt) };
+                }
                 if (isLikelyNuojijiReply(text)) {
                     debug.skipped = 'coordinator output looked like final chat-app reply';
                     debug.errors.push(debug.skipped);
-                    return { relevantInfo: '', debug };
+                    return { relevantInfo: '', debug: finalizeCoordinatorDebug(debug, coordinatorStartedAt) };
                 }
-                return { relevantInfo: text, debug };
+                return { relevantInfo: text, debug: finalizeCoordinatorDebug(debug, coordinatorStartedAt) };
             }
 
             if (round === maxToolRounds) {
@@ -792,6 +811,7 @@ export async function runOmbreCoordinator({
                 const originalName = nameMap.get(call.name) || call.name;
                 const callDebug = { name: originalName, ok: false, result_chars: 0 };
                 if (debugFull) callDebug.args = clipDebugValue(call.args, debugCharLimit);
+                const toolStartedAt = Date.now();
                 try {
                     const result = await mcp.callTool(originalName, call.args);
                     const text = mcpContentToText(result.content);
@@ -811,15 +831,18 @@ export async function runOmbreCoordinator({
                         is_error: true,
                     }));
                 } finally {
+                    callDebug.duration_ms = Date.now() - toolStartedAt;
                     debug.calls.push(callDebug);
                 }
             }
             contents.push(buildGeminiFunctionResponseContent(responseParts));
         }
     } catch (error) {
+        finalizeCoordinatorDebug(debug, coordinatorStartedAt);
         rememberCoordinatorError(debug, error);
         throw attachCoordinatorDebug(error, debug);
     }
 
+    finalizeCoordinatorDebug(debug, coordinatorStartedAt);
     return { relevantInfo: '', debug };
 }

@@ -251,6 +251,7 @@ export async function runProactiveTick(env) {
             const requestId = `proactive_${rec.userId}_${rec.charId}_${now}`;
             const attemptStartedAt = Date.now();
             let content = null, error = null;
+            let generationMs = null;
             const logAttempt = async (stage, extra = {}) => {
                 await logAgentEvent(env, {
                     type: 'proactive_generation',
@@ -274,6 +275,7 @@ export async function runProactiveTick(env) {
                     memoryChars: memory.length,
                     transcriptChars: transcript.length,
                     responseChars: content ? String(content).length : 0,
+                    generationMs,
                     error: error ? debugError(new Error(error)) : null,
                     durationMs: Date.now() - attemptStartedAt,
                     ...extra,
@@ -286,6 +288,7 @@ export async function runProactiveTick(env) {
                     } : undefined,
                 });
             };
+            const generationStartedAt = Date.now();
             try {
                 content = await runGeneration(
                     {
@@ -295,7 +298,9 @@ export async function runProactiveTick(env) {
                     messages,
                     rec.aiSettings?.maxTokens || null
                 );
+                generationMs = Date.now() - generationStartedAt;
             } catch (e) {
+                generationMs = Date.now() - generationStartedAt;
                 error = String(e?.message || e);
             }
 

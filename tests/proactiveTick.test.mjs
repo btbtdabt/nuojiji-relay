@@ -431,7 +431,11 @@ async function testTickLogsProactivePushSummary() {
 
         assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
 
-        const pushEvent = listDebugEvents(kv).find((event) => event.type === 'proactive_push');
+        const events = listDebugEvents(kv);
+        const generationEvent = events.find((event) => event.type === 'proactive_generation');
+        assert.ok(generationEvent.generationMs >= 0);
+
+        const pushEvent = events.find((event) => event.type === 'proactive_push');
         assert.equal(pushEvent.ok, 0);
         assert.equal(pushEvent.bodyCount, 1);
         assert.equal(pushEvent.subscriptionCount, 1);
