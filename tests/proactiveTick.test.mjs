@@ -62,6 +62,11 @@ function parseStoredPair(kv) {
     return JSON.parse(kv.map.get('p:inbox:user:char'));
 }
 
+function listDebugEvents(kv) {
+    const index = JSON.parse(kv.map.get('dbg:agent:index') || '[]');
+    return index.map((row) => JSON.parse(kv.map.get(`dbg:agent:${row.id}`)));
+}
+
 function assertTickResult(actual, expected) {
     assert.deepEqual(actual, {
         ...expected,
@@ -362,6 +367,78 @@ async function testIntervalModeRespectsBackendCooldown() {
 
         const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
         assert.equal(outbox.items.length, 2);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testTickLogsProactivePushSummary() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    let now = 34_000_000;
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'push me' }) } }],
+    }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+    });
+
+    try {
+        const subscribeRes = await postJson(app, env, '/api/push/subscribe', {
+            inboxId: 'inbox',
+            subscription: { channel: 'unknown', token: 'bad-token' },
+        });
+        assert.equal(subscribeRes.status, 200);
+
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'impulse',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}',
+            proactiveProfile: {
+                weights: { silence: 1, timeOfDay: 0, mood: 0, pendingQuestion: 0, randomLife: 0 },
+                silenceSaturationHours: 0.1,
+                quietHours: [0, 0],
+                threshold: 0.1,
+                randomLifeChancePerDay: 0,
+            },
+            lifeState: { unansweredStreak: 0 },
+            recentMessages: [{ sender: 'me', text: 'before' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
+
+        const pushEvent = listDebugEvents(kv).find((event) => event.type === 'proactive_push');
+        assert.equal(pushEvent.ok, 0);
+        assert.equal(pushEvent.bodyCount, 1);
+        assert.equal(pushEvent.subscriptionCount, 1);
+        assert.equal(pushEvent.attempts, 1);
+        assert.equal(pushEvent.failed, 1);
+        assert.deepEqual(pushEvent.channels, { unknown: 1 });
+        assert.deepEqual(pushEvent.reasons, ['unknown-channel:unknown']);
     } finally {
         Date.now = originalNow;
         Math.random = originalRandom;
@@ -911,6 +988,7 @@ testUpgradeProactiveImageSchema();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testIntervalModeRespectsBackendCooldown();
+await testTickLogsProactivePushSummary();
 await testTickSkipsShortlyAfterUserInteraction();
 await testGenerateImmediatelyUpdatesProactiveInteractionState();
 await testGenerateDoesNotAppendCoordinatorErrorsToProactiveWindow();

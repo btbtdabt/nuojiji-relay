@@ -388,6 +388,15 @@ export async function runProactiveTick(env) {
             //    若仍弹通知 → 用户点进聊天却没有消息 = 假通知。失败静默，等下次 tick 重试。
             if (!error) try {
                 const subs = await sub.list(rec.inboxId);
+                const pushSummary = {
+                    attempts: 0,
+                    ok: 0,
+                    failed: 0,
+                    gone: 0,
+                    channels: {},
+                    reasons: [],
+                };
+                let bodies = [];
                 if (subs.length) {
                     const title = rec.timeSpec?.charName || '糯叽机';
                     // 🔒 通知隐私模式：正文换「你有一条新消息」，标题(角色名)/头像保留。仍逐气泡发以保持节奏一致。
@@ -396,7 +405,7 @@ export async function runProactiveTick(env) {
                     const rawBodies = rec.notifPrivacy
                         ? extractPushBodies(content).map(() => '你有一条新消息')
                         : extractPushBodies(content);
-                    const bodies = rawBodies.slice(0, 8);
+                    bodies = rawBodies.slice(0, 8);
                     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
                     let i = 0;
                     for (const body of bodies) {
@@ -415,11 +424,31 @@ export async function runProactiveTick(env) {
                         };
                         for (const s of subs) {
                             const res = await dispatchPush(env, s, payload);
+                            const channel = s?.channel || 'web';
+                            pushSummary.attempts++;
+                            pushSummary.channels[channel] = (pushSummary.channels[channel] || 0) + 1;
+                            if (res?.ok) pushSummary.ok++;
+                            else pushSummary.failed++;
+                            if (res?.gone) pushSummary.gone++;
+                            if (res?.reason && pushSummary.reasons.length < 5) {
+                                pushSummary.reasons.push(String(res.reason).slice(0, 160));
+                            }
                             if (res?.gone) await sub.remove(rec.inboxId, s);
                         }
                         i++;
                     }
                 }
+                await logAgentEvent(env, {
+                    type: 'proactive_push',
+                    ok: pushSummary.failed === 0,
+                    requestId,
+                    inboxId: rec.inboxId,
+                    userId: rec.userId,
+                    charId: rec.charId,
+                    bodyCount: bodies.length,
+                    subscriptionCount: subs.length,
+                    ...pushSummary,
+                });
             } catch (e) { console.warn('[proactive] push failed:', e?.message); }
 
             fired++;
