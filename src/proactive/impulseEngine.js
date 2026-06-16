@@ -78,14 +78,14 @@ export function calculateImpulse({
     const factors = {};
     let score = 0;
 
-    // 🕒 算「现在几点」永远以用户手机时区为基准，绝不退回服务器时区：
-    //   · 异地角色(charOff 有) → 用 charOff 算角色当地小时。
-    //   · 非异地(charOff=null) → 用 userOff(用户设备时区)。
+    // 🕒 算「现在几点」永远优先以用户手机时区为基准：
+    //   · userOff 有 → 用 userOff(用户设备时区)。
+    //   · userOff 缺失且异地角色 charOff 有 → 才用 charOff 算角色当地小时。
     //   · 两者都没有(极旧手机端没传) 才不得已用服务器时区(尽力兜底)。
     //   中继服务器跑在外地/UTC，用服务器时区会把安静时段/该不该发判全乱。
     const charOff = (typeof charUtcOffsetSeconds === 'number') ? charUtcOffsetSeconds : null;
     const userOff = (typeof userUtcOffsetSeconds === 'number') ? userUtcOffsetSeconds : null;
-    const effectiveOff = charOff != null ? charOff : userOff;
+    const effectiveOff = userOff != null ? userOff : charOff;
     const hour = (effectiveOff != null)
         ? new Date(now + effectiveOff * 1000).getUTCHours()
         : new Date(now).getHours();

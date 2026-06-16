@@ -159,7 +159,7 @@ export async function runProactiveTick(env) {
                     proactiveBias: rec.proactiveBias || 0,
                     userActiveAt: 0, // 设备专属信号，后端默认 0
                     charUtcOffsetSeconds: rec.charUtcOffsetSeconds ?? null,
-                    // 🕒 用户设备时区(秒)：非异地时用它算小时，绝不退回服务器时区。
+                    // 🕒 用户设备时区(秒)：有它就优先用它算小时，绝不退回服务器时区。
                     userUtcOffsetSeconds: (typeof rec.timeSpec?.userUtcOffsetSeconds === 'number')
                         ? rec.timeSpec.userUtcOffsetSeconds : null,
                 });

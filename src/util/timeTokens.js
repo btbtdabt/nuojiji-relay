@@ -9,7 +9,7 @@
 
 const WEEKDAY_CN = ['日', '一', '二', '三', '四', '五', '六'];
 
-// 把 epoch(ms) 按 UTC 偏移(秒)平移后用 getUTC* 读取，得到「角色当地」墙钟字段。
+// 把 epoch(ms) 按 UTC 偏移(秒)平移后用 getUTC* 读取，得到指定时区墙钟字段。
 // offsetSeconds 为 null → 用服务器本地时区（getXxx），与手机端无异地时行为对齐。
 function localParts(nowMs, offsetSeconds) {
     if (offsetSeconds == null) {
@@ -27,6 +27,7 @@ function localParts(nowMs, offsetSeconds) {
 }
 
 const pad2 = (n) => String(n).padStart(2, '0');
+const formatDate = (p) => `${p.year}年${p.month}月${p.day}日 星期${WEEKDAY_CN[p.dow] || ''}`;
 
 /**
  * 渲染时间哨兵。无 timeSpec / 模板无哨兵 → 原样返回（向后兼容旧手机端）。
@@ -41,27 +42,30 @@ export function renderTimeTokens(template, timeSpec, nowMs, lastInteractionAt = 
 
     const charOff = (typeof timeSpec.charUtcOffsetSeconds === 'number') ? timeSpec.charUtcOffsetSeconds : null;
     const userOff = (typeof timeSpec.userUtcOffsetSeconds === 'number') ? timeSpec.userUtcOffsetSeconds : null;
-    // 🕒 选用哪个偏移算「现在几点」：
-    //   · 异地角色(charOff 有) → 用 charOff，算角色当地时间(原行为)。
+    // 🕒 选用哪个偏移算 prompt 里的 [BIO] NOW：
+    //   · 异地角色(charOff 有) → 用 charOff，保持 Nuojiji 模板里 "YOUR local time" 的语义。
     //   · 非异地(charOff=null) → 用 userOff(用户设备时区)，绝不退回服务器本地时区。
     //     修 bug(2026-06-07):中继服务器在 UTC/别区，旧逻辑 offset=null 走 getHours() 用了
     //     服务器时区 → 用户本地 15 点被算成「清晨五点」。userOff 也没有才不得已用服务器时区。
+    //     用户当地时间通过 §NOW_USERCLOCK§ 注入，避免把用户作息误判成角色作息。
     const effectiveOff = charOff != null ? charOff : userOff;
     const p = localParts(nowMs, effectiveOff);
     const period = (Array.isArray(timeSpec.periodTable) && timeSpec.periodTable[p.hour]) || {};
 
     const timeStr = `${pad2(p.hour)}:${pad2(p.minute)}`;
-    const dateStr = `${p.year}年${p.month}月${p.day}日 星期${WEEKDAY_CN[p.dow] || ''}`;
+    const dateStr = formatDate(p);
 
     // 异地双时钟：两个偏移都有才渲染（与手机端注入条件一致）
     let userClock = '';
-    if (charOff != null && typeof timeSpec.userUtcOffsetSeconds === 'number') {
-        const up = localParts(nowMs, timeSpec.userUtcOffsetSeconds);
-        const diffHours = (charOff - timeSpec.userUtcOffsetSeconds) / 3600;
+    if (charOff != null && userOff != null) {
+        const up = localParts(nowMs, userOff);
+        const userTime = `${pad2(up.hour)}:${pad2(up.minute)}`;
+        const userDate = formatDate(up);
+        const diffHours = (charOff - userOff) / 3600;
         const diffDesc = diffHours === 0
             ? 'same timezone'
             : (diffHours > 0 ? `you are ${Math.abs(diffHours)}h AHEAD of user` : `you are ${Math.abs(diffHours)}h BEHIND user`);
-        userClock = ` | YOU(${timeSpec.charName || 'AI'})=${timeStr}, USER=${pad2(up.hour)}:${pad2(up.minute)} (${diffDesc})`;
+        userClock = ` | YOUR_LOCAL_TIME(${timeSpec.charName || 'AI'})=${dateStr} ${timeStr}, USER_LOCAL_TIME=${userDate} ${userTime} (${diffDesc}; judge the user's date, sleep, meals, and availability by USER_LOCAL_TIME)`;
     }
 
     // 🕒 距上次互动的相对时间 —— 用 tick 真实 now 重算（治「后端生成的消息时间还是用户在线那刻」bug）。
