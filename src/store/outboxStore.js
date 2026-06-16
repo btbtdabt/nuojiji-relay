@@ -20,8 +20,9 @@ export function resolveTtlMs(env) {
     return DEFAULT_TTL_MS;
 }
 
-// 同时跟踪 requestId 去重：已处理过的 requestId 在 TTL 内拒绝重复 /generate（返回 409）。
-// 各实现内部维护一个 requestId→createdAt 的小表。
+// 同时跟踪 requestId 去重状态：
+// - started：同 requestId 正在生成，重复 /generate 返回 202 pending，让手机继续排水。
+// - completed：结果已写过 outbox；若 outbox 已被取走/过期，重复 /generate 返回 409。
 
 // Node 进程级单例：HTTP 路由与 cron tick 必须共享同一实例（否则 tick 写的 outbox 路由读不到）。
 let _nodeSingleton = null;

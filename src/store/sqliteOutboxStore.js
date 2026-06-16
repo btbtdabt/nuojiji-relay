@@ -34,26 +34,37 @@ export class SqliteOutboxStore {
             CREATE INDEX IF NOT EXISTS idx_outbox_inbox_created ON outbox(inboxId, createdAt);
             CREATE TABLE IF NOT EXISTS req_seen (
                 requestId TEXT PRIMARY KEY,
-                createdAt INTEGER NOT NULL
+                createdAt INTEGER NOT NULL,
+                status    TEXT
             );
         `);
+        try { this.db.exec('ALTER TABLE req_seen ADD COLUMN status TEXT'); } catch { /* already exists */ }
         this._timer = setInterval(() => this.sweep(), 60_000);
         if (this._timer.unref) this._timer.unref();
     }
 
     seenRequest(requestId) {
-        const row = this.db.prepare('SELECT createdAt FROM req_seen WHERE requestId = ?').get(requestId);
-        if (!row) return false;
-        if (Date.now() - row.createdAt > this.ttlMs) {
-            this.db.prepare('DELETE FROM req_seen WHERE requestId = ?').run(requestId);
-            return false;
-        }
-        return true;
+        const mark = this.getRequestMark(requestId);
+        return !!mark.seen;
     }
 
-    markRequest(requestId) {
-        this.db.prepare('INSERT OR REPLACE INTO req_seen (requestId, createdAt) VALUES (?, ?)')
-            .run(requestId, Date.now());
+    getRequestMark(requestId) {
+        const row = this.db.prepare('SELECT createdAt, status FROM req_seen WHERE requestId = ?').get(requestId);
+        if (!row) return { seen: false };
+        if (Date.now() - row.createdAt > this.ttlMs) {
+            this.db.prepare('DELETE FROM req_seen WHERE requestId = ?').run(requestId);
+            return { seen: false };
+        }
+        return {
+            seen: true,
+            createdAt: Number(row.createdAt) || 0,
+            status: row.status === 'started' ? 'started' : 'completed',
+        };
+    }
+
+    markRequest(requestId, status = 'started') {
+        this.db.prepare('INSERT OR REPLACE INTO req_seen (requestId, createdAt, status) VALUES (?, ?, ?)')
+            .run(requestId, Date.now(), status === 'completed' ? 'completed' : 'started');
     }
 
     async put(inboxId, item) {
@@ -71,7 +82,7 @@ export class SqliteOutboxStore {
             error: item.error ?? null,
             createdAt: item.createdAt,
         });
-        this.markRequest(item.requestId);
+        this.markRequest(item.requestId, 'completed');
     }
 
     async list(inboxId, sinceTs = 0) {

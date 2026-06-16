@@ -33,6 +33,7 @@ import { mergePendingCommitments, parseCommitmentsFromContent } from './util/com
 
 const VERSION = '1.0.0';
 const TEMP_PROACTIVE_QUIET_HOURS = [3, 9];
+const GENERATE_INFLIGHT_DUPLICATE_MS = 10 * 60 * 1000;
 const COORDINATOR_ERROR_PREFIX = '【coordinator报错】';
 
 function envFlag(env, key) {
@@ -238,9 +239,18 @@ export function createApp() {
                     return c.json({ accepted: true, requestId, generated: true, replayed: true }, 202);
                 }
             } catch { /* 查不到就照旧 409 */ }
+            try {
+                const mark = await outbox.getRequestMark?.(requestId);
+                const startedAt = Number(mark?.createdAt) || 0;
+                if (mark?.status === 'started'
+                    && startedAt > 0
+                    && Date.now() - startedAt < GENERATE_INFLIGHT_DUPLICATE_MS) {
+                    return c.json({ accepted: true, requestId, generated: false, pending: true, duplicate: true }, 202);
+                }
+            } catch { /* fallback to 409 */ }
             return c.json({ duplicate: true, requestId }, 409);
         }
-        await outbox.markRequest(requestId);
+        await outbox.markRequest(requestId, 'started');
         const proactiveUserId = meta?.userId != null ? String(meta.userId) : null;
         const proactiveCharId = meta?.charId != null ? String(meta.charId) : null;
         const replyGenerationClaimId = (proactiveUserId && proactiveCharId)

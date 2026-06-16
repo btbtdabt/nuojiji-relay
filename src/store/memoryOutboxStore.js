@@ -8,7 +8,7 @@ export class MemoryOutboxStore {
         this.kind = 'memory';
         // inboxId -> Map<id, item>
         this.byInbox = new Map();
-        // requestId -> createdAt（去重）
+        // requestId -> { createdAt, status }（去重）
         this.requestIds = new Map();
         // 定时清扫
         this._timer = setInterval(() => this.sweep(), 60_000);
@@ -17,23 +17,39 @@ export class MemoryOutboxStore {
 
     // 已见过该 requestId（且未过期）→ true
     seenRequest(requestId) {
-        const ts = this.requestIds.get(requestId);
-        if (ts == null) return false;
-        if (Date.now() - ts > this.ttlMs) {
-            this.requestIds.delete(requestId);
-            return false;
-        }
-        return true;
+        const mark = this.getRequestMark(requestId);
+        return !!mark?.seen;
     }
 
-    markRequest(requestId) {
-        this.requestIds.set(requestId, Date.now());
+    getRequestMark(requestId) {
+        const raw = this.requestIds.get(requestId);
+        if (raw == null) return { seen: false };
+        const mark = (raw && typeof raw === 'object')
+            ? raw
+            : { createdAt: Number(raw) || 0, status: 'completed' };
+        const createdAt = Number(mark.createdAt) || 0;
+        if (!createdAt || Date.now() - createdAt > this.ttlMs) {
+            this.requestIds.delete(requestId);
+            return { seen: false };
+        }
+        return {
+            seen: true,
+            createdAt,
+            status: mark.status === 'started' ? 'started' : 'completed',
+        };
+    }
+
+    markRequest(requestId, status = 'started') {
+        this.requestIds.set(requestId, {
+            createdAt: Date.now(),
+            status: status === 'completed' ? 'completed' : 'started',
+        });
     }
 
     async put(inboxId, item) {
         if (!this.byInbox.has(inboxId)) this.byInbox.set(inboxId, new Map());
         this.byInbox.get(inboxId).set(item.id, item);
-        this.markRequest(item.requestId);
+        this.markRequest(item.requestId, 'completed');
     }
 
     async list(inboxId, sinceTs = 0) {
@@ -59,6 +75,9 @@ export class MemoryOutboxStore {
             for (const [id, it] of m) if (it.createdAt < cutoff) m.delete(id);
             if (m.size === 0) this.byInbox.delete(inboxId);
         }
-        for (const [rid, ts] of this.requestIds) if (ts < cutoff) this.requestIds.delete(rid);
+        for (const [rid, raw] of this.requestIds) {
+            const ts = raw && typeof raw === 'object' ? Number(raw.createdAt) || 0 : Number(raw) || 0;
+            if (ts < cutoff) this.requestIds.delete(rid);
+        }
     }
 }

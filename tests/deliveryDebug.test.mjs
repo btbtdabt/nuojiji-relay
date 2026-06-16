@@ -67,6 +67,41 @@ async function debugEvents(kv) {
     return events;
 }
 
+function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
+async function waitFor(fn, timeoutMs = 1000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (await fn()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return false;
+}
+
+function generatePayload(requestId = 'req-generate') {
+    return {
+        requestId,
+        inboxId: 'inbox',
+        messages: [{ role: 'user', content: 'hello' }],
+        settings: {
+            mainApiUrl: 'https://api.openai.example',
+            mainApiKey: 'test-key',
+            mainApiModel: 'test-model',
+            apiType: 'openai',
+            autoRetryEnabled: false,
+            secondaryFallbackEnabled: false,
+        },
+    };
+}
+
 async function testOutboxDebugShowsItemsHiddenBySince() {
     const app = createApp();
     const kv = new FakeKv();
@@ -159,6 +194,73 @@ async function testProactiveSyncDebugRecordsLatestUserMessage() {
     assert.equal(syncDebug.lastInteractionAt, 20_000);
 }
 
+async function testDuplicateGenerateWhileInFlightReturnsPending() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const originalFetch = globalThis.fetch;
+    const gate = deferred();
+    globalThis.fetch = async () => {
+        await gate.promise;
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: '{"t":"text","c":"ok"}' } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const first = postJson(app, kv, '/generate', generatePayload('req-inflight'));
+        assert.equal(await waitFor(async () => (await kv.get('r:req-inflight')) != null), true);
+
+        const duplicate = await postJson(app, kv, '/generate', generatePayload('req-inflight'));
+        const duplicateBody = await duplicate.json();
+        assert.equal(duplicate.status, 202);
+        assert.equal(duplicateBody.pending, true);
+        assert.equal(duplicateBody.duplicate, true);
+
+        gate.resolve();
+        const firstRes = await first;
+        assert.equal(firstRes.status, 202);
+        const listed = await getJson(app, kv, '/outbox?inboxId=inbox&since=0');
+        assert.equal(listed.items.length, 1);
+        assert.equal(listed.items[0].requestId, 'req-inflight');
+    } finally {
+        globalThis.fetch = originalFetch;
+        gate.resolve();
+    }
+}
+
+async function testDuplicateGenerateAfterAckStillConflicts() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+        choices: [{ message: { content: '{"t":"text","c":"ok"}' } }],
+    }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+    });
+
+    try {
+        const first = await postJson(app, kv, '/generate', generatePayload('req-acked'));
+        assert.equal(first.status, 202);
+
+        const listed = await getJson(app, kv, '/outbox?inboxId=inbox&since=0');
+        assert.equal(listed.items.length, 1);
+        const ack = await postJson(app, kv, '/ack', {
+            inboxId: 'inbox',
+            ids: [listed.items[0].id],
+        });
+        assert.equal(ack.status, 200);
+
+        const duplicate = await postJson(app, kv, '/generate', generatePayload('req-acked'));
+        assert.equal(duplicate.status, 409);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 async function testPushDiagDebugRecordsMaskedSubscriptions() {
     const app = createApp();
     const kv = new FakeKv();
@@ -189,5 +291,7 @@ async function testPushDiagDebugRecordsMaskedSubscriptions() {
 
 await testOutboxDebugShowsItemsHiddenBySince();
 await testProactiveSyncDebugRecordsLatestUserMessage();
+await testDuplicateGenerateWhileInFlightReturnsPending();
+await testDuplicateGenerateAfterAckStillConflicts();
 await testPushDiagDebugRecordsMaskedSubscriptions();
 console.log('deliveryDebug tests passed');

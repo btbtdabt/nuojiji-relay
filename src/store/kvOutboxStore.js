@@ -21,13 +21,33 @@ export class KvOutboxStore {
         this.ttlSec = Math.floor(this.ttlMs / 1000);
     }
 
-    async seenRequest(requestId) {
-        const v = await this.kv.get(`r:${requestId}`);
-        return v != null;
+    _parseRequestMark(raw) {
+        if (!raw) return { seen: false };
+        try {
+            const parsed = JSON.parse(raw);
+            const createdAt = Number(parsed?.createdAt) || 0;
+            const status = parsed?.status === 'started' ? 'started' : 'completed';
+            if (createdAt > 0) return { seen: true, createdAt, status };
+        } catch { /* legacy marker */ }
+        return { seen: true, createdAt: 0, status: 'completed' };
     }
 
-    async markRequest(requestId) {
-        await this.kv.put(`r:${requestId}`, '1', { expirationTtl: this.ttlSec });
+    async getRequestMark(requestId) {
+        const v = await this.kv.get(`r:${requestId}`);
+        return this._parseRequestMark(v);
+    }
+
+    async seenRequest(requestId) {
+        const mark = await this.getRequestMark(requestId);
+        return !!mark.seen;
+    }
+
+    async markRequest(requestId, status = 'started') {
+        const mark = {
+            createdAt: Date.now(),
+            status: status === 'completed' ? 'completed' : 'started',
+        };
+        await this.kv.put(`r:${requestId}`, JSON.stringify(mark), { expirationTtl: this.ttlSec });
     }
 
     async _getIndex(inboxId) {
@@ -73,7 +93,7 @@ export class KvOutboxStore {
         // 去重（同 id 不重复追加）
         if (!idx.some((e) => e.id === item.id)) idx.push({ id: item.id, createdAt: item.createdAt });
         await this._putIndex(inboxId, idx);
-        await this.markRequest(item.requestId);
+        await this.markRequest(item.requestId, 'completed');
     }
 
     async list(inboxId, sinceTs = 0) {
