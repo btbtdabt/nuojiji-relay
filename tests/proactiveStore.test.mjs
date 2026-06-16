@@ -184,9 +184,46 @@ function testMergeKeepsResetForRepeatedCurrentUserWindow() {
         lifeState: { unansweredStreak: 0 },
     }, 60_000);
 
-    assert.equal(merged.lastInteractionAt, 60_000);
+    assert.equal(merged.lastInteractionAt, 50_000);
     assert.equal(merged.lifeState.unansweredStreak, 0);
     assert.deepEqual(merged.recentMessages, window);
+}
+
+async function testDuplicateCurrentUserWindowAfterFireDoesNotWrite() {
+    const store = new MemoryProactiveStore();
+    const window = [
+        { sender: 'me', text: 'before' },
+        { sender: 'char', text: 'server proactive' },
+        { sender: 'me', text: 'user replied' },
+    ];
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        lastInteractionAt: 50_000,
+        lastFiredAt: 50_000,
+        recentMessages: window,
+        lifeState: {
+            unansweredStreak: 0,
+            lastImpulseAt: 50_000,
+            lastProactiveSentAt: 50_000,
+        },
+    };
+
+    await store.upsert(rec);
+    const result = await store.upsert({
+        ...rec,
+        updatedAt: 99_000,
+        lastInteractionAt: 40_000,
+        registerMeta: { receivedAt: 99_000 },
+    });
+
+    assert.equal(result.changed, false);
+    const stored = await store.get('inbox', 'user', 'char');
+    assert.equal(stored.lastInteractionAt, 50_000);
+    assert.equal(stored.lifeState.unansweredStreak, 0);
 }
 
 function testMergeTreatsReplyGenerationClaimAsUserSignal() {
@@ -526,6 +563,48 @@ async function testKvFireAtMirrorIsMonotonic() {
     await store.patch('inbox', 'user', 'char', { notifPrivacy: true });
 
     assert.equal(await kv.get('pf:inbox:user:char'), '30000');
+    assert.equal(kv.putCalls.some((call) => call.key === 'pf:inbox:user:char'), false);
+}
+
+async function testKvDuplicateUpsertDoesNotRewriteFireMirrorOnlyDifference() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const window = [
+        { sender: 'me', text: 'before' },
+        { sender: 'char', text: 'server proactive' },
+        { sender: 'me', text: 'user replied' },
+    ];
+    const rec = {
+        inboxId: 'inbox',
+        userId: 'user',
+        charId: 'char',
+        enabled: true,
+        proactiveEnabledAt: 1_000,
+        updatedAt: 1_000,
+        promptTemplate: 'prompt',
+        aiSettings: { mainApiUrl: 'https://example.com', mainApiKey: 'k' },
+        lastInteractionAt: 50_000,
+        recentMessages: window,
+        lifeState: {
+            unansweredStreak: 0,
+            lastImpulseAt: 30_000,
+            lastProactiveSentAt: 30_000,
+        },
+    };
+
+    await kv.put('p:inbox:user:char', JSON.stringify(rec));
+    await kv.put('pf:inbox:user:char', '30000');
+    kv.putCalls = [];
+
+    const result = await store.upsert({
+        ...rec,
+        updatedAt: 99_000,
+        lastInteractionAt: 40_000,
+        registerMeta: { receivedAt: 99_000 },
+    });
+
+    assert.equal(result.changed, false);
+    assert.equal(kv.putCalls.some((call) => call.key === 'p:inbox:user:char'), false);
     assert.equal(kv.putCalls.some((call) => call.key === 'pf:inbox:user:char'), false);
 }
 
@@ -889,6 +968,7 @@ testMergeKeepsServerWindowUntilUserReply();
 testMergeInitializesNewRecordEnabledAt();
 testMergePendingCommitmentsPreservesExistingRelayItems();
 await testPatchKeepsNewerServerTiming();
+await testDuplicateCurrentUserWindowAfterFireDoesNotWrite();
 await testPatchAcceptsServerWindowAtFireTimestamp();
 await testKvListUsesFireAtMirror();
 await testKvFireMirrorRepairsRuntimeStateWhenUnanswered();
@@ -896,6 +976,7 @@ await testKvFireMirrorKeepsUserReplyReset();
 await testKvPatchReplyGenerationClaimClearsFireMirrorStreak();
 await testKvFireMirrorCountsOneMissedFire();
 await testKvFireAtMirrorIsMonotonic();
+await testKvDuplicateUpsertDoesNotRewriteFireMirrorOnlyDifference();
 await testKvPatchRepairsStaleRuntimeStateFromFireMirror();
 await testKvPatchRepairsRuntimeStateWhenFireAlreadyMirrored();
 await testKvNoopPatchRepairsStaleRuntimeStateFromFireMirror();
