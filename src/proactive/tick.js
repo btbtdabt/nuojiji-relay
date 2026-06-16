@@ -207,6 +207,7 @@ export async function runProactiveTick(env) {
                 rec.inboxId, rec.userId, rec.charId, now, BACKEND_FIRE_COOLDOWN_MS
             );
             if (!claimed) continue; // 别的 tick 刚抢了这一对 → 跳过，绝不双发
+            const generationUserMessageEpoch = Number(rec.userMessageEpoch) || 0;
 
             // 命中 → 实时生成。messages 只有一条 system（手机端拼好的完整 prompt + 填充滑窗）
             let transcript = renderTranscript(rec.recentMessages);
@@ -313,6 +314,17 @@ export async function runProactiveTick(env) {
             if ((Number(latest.lastInteractionAt) || 0) > now) {
                 await logAttempt('discarded_after_generation', {
                     discardReason: 'user_replied_after_generation_started',
+                    latestLastInteractionAt: Number(latest.lastInteractionAt) || 0,
+                });
+                await proactive.claimFire(rec.inboxId, rec.userId, rec.charId, rec.lastFiredAt || 0);
+                continue;
+            }
+            const latestUserMessageEpoch = Number(latest.userMessageEpoch) || 0;
+            if (latestUserMessageEpoch > generationUserMessageEpoch) {
+                await logAttempt('discarded_after_generation', {
+                    discardReason: 'user_message_epoch_changed_after_generation_started',
+                    generationUserMessageEpoch,
+                    latestUserMessageEpoch,
                     latestLastInteractionAt: Number(latest.lastInteractionAt) || 0,
                 });
                 await proactive.claimFire(rec.inboxId, rec.userId, rec.charId, rec.lastFiredAt || 0);

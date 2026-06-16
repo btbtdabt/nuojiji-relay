@@ -313,6 +313,33 @@ function testMergeKeepsServerWindowUntilUserReply() {
     assert.equal(fresh.lifeState.unansweredStreak, 0);
 }
 
+function testMergeAcceptsNewUserMessageEvenWhenLatestMessageIsCharacter() {
+    const prevWindow = [
+        { sender: 'me', text: 'before' },
+        { sender: 'char', text: 'server proactive' },
+    ];
+    const syncedWindow = [
+        ...prevWindow,
+        { sender: 'me', text: 'new user message without timestamp' },
+        { sender: 'char', text: 'local fallback reply' },
+    ];
+
+    const merged = mergeProactiveRecord({
+        lastFiredAt: 30_000,
+        lastInteractionAt: 30_000,
+        recentMessages: prevWindow,
+        lifeState: { unansweredStreak: 1 },
+    }, {
+        recentMessages: syncedWindow,
+        lifeState: { unansweredStreak: 0 },
+    }, 40_000);
+
+    assert.deepEqual(merged.recentMessages, syncedWindow);
+    assert.equal(merged.lastInteractionAt, 40_000);
+    assert.equal(merged.lifeState.unansweredStreak, 0);
+    assert.equal(merged.userMessageEpoch, 1);
+}
+
 function testMergeInitializesNewRecordEnabledAt() {
     const merged = mergeProactiveRecord({}, {
         inboxId: 'inbox',
@@ -965,6 +992,7 @@ testMergeKeepsResetForRepeatedCurrentUserWindow();
 testMergeTreatsReplyGenerationClaimAsUserSignal();
 testMergeDoesNotTreatStaleClientWindowAsUserReply();
 testMergeKeepsServerWindowUntilUserReply();
+testMergeAcceptsNewUserMessageEvenWhenLatestMessageIsCharacter();
 testMergeInitializesNewRecordEnabledAt();
 testMergePendingCommitmentsPreservesExistingRelayItems();
 await testPatchKeepsNewerServerTiming();

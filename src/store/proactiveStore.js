@@ -126,7 +126,12 @@ function normalizeForBehaviorCompare(value, key = '') {
 
     const out = {};
     for (const childKey of Object.keys(value).sort()) {
-        if (key === '' && (childKey === 'updatedAt' || childKey === 'registerMeta')) continue;
+        if (key === '' && (
+            childKey === 'updatedAt'
+            || childKey === 'registerMeta'
+            || childKey === 'latestUserMessageSignature'
+            || childKey === 'userMessageEpoch'
+        )) continue;
         const normalized = normalizeForBehaviorCompare(value[childKey], childKey);
         if (normalized !== undefined) out[childKey] = normalized;
     }
@@ -201,10 +206,13 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     const incomingFiredAt = Number(next.lastFiredAt) || 0;
     const prevLastFiredAt = Number(prev.lastFiredAt) || 0;
     const newLatestUserMessage = hasNewLatestUserMessage(prev.recentMessages, next.recentMessages);
+    const prevUserSignature = String(prev.latestUserMessageSignature || latestUserMessageSignature(prev.recentMessages) || '');
+    const nextUserSignature = latestUserMessageSignature(next.recentMessages);
+    const userMessageChanged = !!nextUserSignature && nextUserSignature !== prevUserSignature;
     const replyGenerationClaim = typeof next.generationClaimId === 'string' && next.generationClaimId.startsWith('reply_');
     const currentUserWindowObserved = latestUserWindowIsCurrent(prev.recentMessages, next.recentMessages);
-    const userReplyObserved = replyGenerationClaim || newLatestUserMessage || currentUserWindowObserved;
-    const freshUserInteractionObserved = replyGenerationClaim || newLatestUserMessage
+    const userReplyObserved = replyGenerationClaim || newLatestUserMessage || userMessageChanged || currentUserWindowObserved;
+    const freshUserInteractionObserved = replyGenerationClaim || newLatestUserMessage || userMessageChanged
         || incomingInteractionAt > prevLastFiredAt;
 
     if (next.lifeState !== undefined) {
@@ -230,7 +238,8 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
         && prevLastFiredAt
         && incomingInteractionAt <= prevLastFiredAt
         && !isServerFireWindowPatch
-        && !newLatestUserMessage) {
+        && !newLatestUserMessage
+        && !userMessageChanged) {
         merged.recentMessages = prev.recentMessages;
     }
 
@@ -245,6 +254,15 @@ export function mergeProactiveRecord(prevRecord, nextRecord, now = Date.now()) {
     if (freshUserInteractionObserved) {
         const inferredInteractionAt = incomingInteractionAt > prevLastFiredAt ? incomingInteractionAt : now;
         merged.lastInteractionAt = Math.max(Number(merged.lastInteractionAt) || 0, inferredInteractionAt);
+    }
+
+    if (nextUserSignature || prevUserSignature) {
+        merged.latestUserMessageSignature = nextUserSignature || prevUserSignature;
+    }
+    if (replyGenerationClaim || newLatestUserMessage || userMessageChanged) {
+        merged.userMessageEpoch = (Number(prev.userMessageEpoch) || 0) + 1;
+    } else if (prev.userMessageEpoch !== undefined || next.userMessageEpoch !== undefined) {
+        merged.userMessageEpoch = maxNumber(prev.userMessageEpoch, next.userMessageEpoch);
     }
 
     if (userReplyObserved

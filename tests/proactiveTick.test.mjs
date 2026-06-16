@@ -309,6 +309,177 @@ async function testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration() {
     }
 }
 
+async function testTickDropsGeneratedBubbleWhenUserReplySyncHasNoNewTimestamp() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    let now = 21_000_000;
+    const aiRequests = [];
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async (_url, init) => {
+        aiRequests.push(JSON.parse(String(init?.body || '{}')));
+        const syncRes = await postJson(app, env, '/proactive/sync-messages', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            recentMessages: [
+                { sender: 'me', text: 'before' },
+                { sender: 'me', text: 'new user message without fresh timestamp' },
+            ],
+            lifeState: { unansweredStreak: 0 },
+        });
+        assert.equal(syncRes.status, 200);
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'stale proactive' }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'impulse',
+            promptTemplate: [
+                'Recent:',
+                '{{RECENT_MESSAGES}}',
+                'Reason: {{IMPULSE_REASON}}',
+            ].join('\n'),
+            proactiveProfile: {
+                weights: { silence: 1, timeOfDay: 0, mood: 0, pendingQuestion: 0, randomLife: 0 },
+                silenceSaturationHours: 0.1,
+                quietHours: [0, 0],
+                threshold: 0.1,
+                randomLifeChancePerDay: 0,
+            },
+            lifeState: { unansweredStreak: 0 },
+            intensity: 'normal',
+            proactiveBias: 0,
+            recentMessages: [{ sender: 'me', text: 'before' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        const tick = await runProactiveTick(env);
+        assertTickResult(tick, { pairs: 1, fired: 0 });
+        assert.equal(aiRequests.length, 1);
+
+        const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
+        assert.equal(outbox.items.length, 0);
+
+        const stored = parseStoredPair(kv);
+        assert.deepEqual(stored.recentMessages, [
+            { sender: 'me', text: 'before' },
+            { sender: 'me', text: 'new user message without fresh timestamp' },
+        ]);
+        assert.equal(stored.lifeState.unansweredStreak, 0);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testTickKeepsSlowGeneratedBubbleWithoutUserReply() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    let now = 22_000_000;
+    const aiRequests = [];
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async (_url, init) => {
+        aiRequests.push(JSON.parse(String(init?.body || '{}')));
+        now += 10 * 60_000;
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'slow proactive is still current' }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'impulse',
+            promptTemplate: [
+                'Recent:',
+                '{{RECENT_MESSAGES}}',
+                'Reason: {{IMPULSE_REASON}}',
+            ].join('\n'),
+            proactiveProfile: {
+                weights: { silence: 1, timeOfDay: 0, mood: 0, pendingQuestion: 0, randomLife: 0 },
+                silenceSaturationHours: 0.1,
+                quietHours: [0, 0],
+                threshold: 0.1,
+                randomLifeChancePerDay: 0,
+            },
+            lifeState: { unansweredStreak: 0 },
+            intensity: 'normal',
+            proactiveBias: 0,
+            recentMessages: [{ sender: 'me', text: 'before' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        const tick = await runProactiveTick(env);
+        assertTickResult(tick, { pairs: 1, fired: 1 });
+        assert.equal(aiRequests.length, 1);
+
+        const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
+        assert.equal(outbox.items.length, 1);
+        assert.match(outbox.items[0].content, /slow proactive is still current/);
+
+        const stored = parseStoredPair(kv);
+        assert.equal(stored.lifeState.unansweredStreak, 1);
+        assert.deepEqual(stored.recentMessages, [
+            { sender: 'me', text: 'before' },
+            { sender: 'char', text: 'slow proactive is still current' },
+        ]);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
 async function testIntervalModeRespectsBackendCooldown() {
     const app = createApp();
     const kv = new FakeKv();
@@ -991,6 +1162,8 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
 testUpgradeProactiveImageSchema();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
+await testTickDropsGeneratedBubbleWhenUserReplySyncHasNoNewTimestamp();
+await testTickKeepsSlowGeneratedBubbleWithoutUserReply();
 await testIntervalModeRespectsBackendCooldown();
 await testTickLogsProactivePushSummary();
 await testTickSkipsShortlyAfterUserInteraction();
