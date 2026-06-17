@@ -5,7 +5,8 @@ import { clipDebugValue } from './agentDebug.js';
 
 const DEFAULT_COORDINATOR_BASE_URL = '';
 const DEFAULT_COORDINATOR_MODEL = 'gemini-3.5-flash';
-const DEFAULT_TIMEOUT_MS = 600_000;
+const DEFAULT_MCP_TIMEOUT_MS = 600_000;
+const DEFAULT_GEMINI_TIMEOUT_MS = 0;
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_GEMINI_RETRY_ATTEMPTS = 2;
 const RETRYABLE_GEMINI_STATUSES = new Set([429, 500, 502, 503, 504, 520, 522, 524]);
@@ -190,6 +191,11 @@ function formatMessageBlock(message, index) {
     const role = String(message?.role || 'unknown');
     const content = messageContentToText(message);
     return `[${index + 1}] ${role}:\n${content || '(empty)'}`;
+}
+
+function normalizeTimeoutMs(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 const MAX_COMPACT_SYSTEM_CHARS = 6000;
@@ -565,8 +571,9 @@ async function callGeminiGenerateContentOnce({
         generationConfig: { temperature: 0.2 },
     };
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const requestTimeoutMs = normalizeTimeoutMs(timeoutMs);
+    const controller = requestTimeoutMs > 0 ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), requestTimeoutMs) : null;
     let response;
     try {
         const headers = {
@@ -583,18 +590,19 @@ async function callGeminiGenerateContentOnce({
         headers['X-Ombre-Client-Role'] = 'coordinator';
         const query = String(currentQuery || '').trim();
         if (query) headers['X-Ombre-Current-Query-B64'] = utf8Base64(query.slice(0, 4000));
-        response = await fetchImpl(endpoint, {
+        const fetchInit = {
             method: 'POST',
             headers,
             body: JSON.stringify(body),
-            signal: controller.signal,
-        });
+        };
+        if (controller) fetchInit.signal = controller.signal;
+        response = await fetchImpl(endpoint, fetchInit);
     } catch (error) {
         const wrapped = new Error(`Gemini coordinator network error: ${error?.message || error}`);
         wrapped.retryable = true;
         throw wrapped;
     } finally {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
     }
 
     const rawText = await response.text();
@@ -712,7 +720,9 @@ export async function runOmbreCoordinator({
     authType = 'bearer',
     sessionId = '',
     model = DEFAULT_COORDINATOR_MODEL,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
+    timeoutMs = DEFAULT_MCP_TIMEOUT_MS,
+    mcpTimeoutMs = timeoutMs,
+    geminiTimeoutMs = DEFAULT_GEMINI_TIMEOUT_MS,
     maxToolRounds = DEFAULT_MAX_TOOL_ROUNDS,
     geminiRetryAttempts = DEFAULT_GEMINI_RETRY_ATTEMPTS,
     debugFull = false,
@@ -727,7 +737,7 @@ export async function runOmbreCoordinator({
 
     try {
         const mcpSessionStartedAt = Date.now();
-        const mcp = await createMcpSession(mcpServer, { timeoutMs });
+        const mcp = await createMcpSession(mcpServer, { timeoutMs: mcpTimeoutMs });
         debug.timings.mcp_session_ms = Date.now() - mcpSessionStartedAt;
 
         const mcpListToolsStartedAt = Date.now();
@@ -773,7 +783,7 @@ export async function runOmbreCoordinator({
                 model,
                 contents,
                 functionDeclarations,
-                timeoutMs,
+                timeoutMs: geminiTimeoutMs,
                 retryAttempts: geminiRetryAttempts,
                 onAttempt: (attemptDebug) => {
                     debug.gemini_attempts.push({ round: round + 1, ...attemptDebug });

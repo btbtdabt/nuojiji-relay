@@ -131,6 +131,8 @@ function testCoordinatorConfigHasNoDirectGeminiDefault() {
     assert.equal(config.apiKey, '');
     assert.equal(config.authType, 'bearer');
     assert.equal(config.sessionId, 'relay-coordinator');
+    assert.equal(config.timeoutMs, 600_000);
+    assert.equal(config.geminiTimeoutMs, 0);
 }
 
 function testCoordinatorMessageFormatting() {

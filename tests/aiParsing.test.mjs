@@ -109,6 +109,41 @@ async function testRunGenerationAddsCurrentQueryHeaderWithoutChangingMessages() 
     }
 }
 
+async function testRunGenerationHasNoLocalAbortSignalByDefault() {
+    const originalFetch = globalThis.fetch;
+    let hasAbortSignal = true;
+    globalThis.fetch = async (_url, init) => {
+        hasAbortSignal = Object.prototype.hasOwnProperty.call(init || {}, 'signal');
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+            start(controller) {
+                controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'));
+                controller.close();
+            },
+        });
+        return new Response(stream, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+        });
+    };
+
+    try {
+        const content = await runGeneration({
+            mainApiUrl: 'https://gateway.example.com/v1',
+            mainApiKey: 'test-key',
+            mainApiModel: 'test-model',
+            apiType: 'openai',
+            autoRetryEnabled: false,
+            secondaryFallbackEnabled: false,
+        }, [{ role: 'user', content: 'go' }]);
+
+        assert.equal(content, 'ok');
+        assert.equal(hasAbortSignal, false);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 function testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText() {
     const messages = [{ role: 'system', content: 'Generate one proactive message.' }];
     const body = buildChatRequestBody({
@@ -128,5 +163,6 @@ testGeminiNonStreamJoinsAllTextParts();
 testClaudeNonStreamJoinsAllTextBlocks();
 await testSseFinalDataLineWithoutTrailingNewlineIsParsed();
 await testRunGenerationAddsCurrentQueryHeaderWithoutChangingMessages();
+await testRunGenerationHasNoLocalAbortSignalByDefault();
 testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText();
 console.log('aiParsing tests passed');

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
 import {
+    PROACTIVE_TICK_LOCK_TTL_MS,
     PROACTIVE_USER_REPLY_GRACE_MS,
     runProactiveTick,
     upgradeProactiveImageSchema,
@@ -87,6 +88,10 @@ function testUpgradeProactiveImageSchema() {
     assert.match(upgraded, /English NovelAI\/SDXL tag prompt/);
     assert.doesNotMatch(upgraded, /{"t":"image","d":"描述照片内容"/);
     assert.doesNotMatch(upgraded, /Image NOW → {"t":"image","d":"\.\.\."}/);
+}
+
+function testProactiveTickLockCoversLongGenerationWindow() {
+    assert.equal(PROACTIVE_TICK_LOCK_TTL_MS >= 24 * 60 * 60 * 1000, true);
 }
 
 async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
@@ -1160,6 +1165,7 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
 }
 
 testUpgradeProactiveImageSchema();
+testProactiveTickLockCoversLongGenerationWindow();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testTickDropsGeneratedBubbleWhenUserReplySyncHasNoNewTimestamp();

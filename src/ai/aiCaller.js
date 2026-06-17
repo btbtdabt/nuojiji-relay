@@ -4,7 +4,12 @@
 import { getApiConfig } from './apiConfigs.js';
 import { buildChatEndpoint, buildApiHeaders, buildChatRequestBody, assertSafeApiUrl } from './requestBuilder.js';
 
-const REQUEST_TIMEOUT_MS = 600_000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 0;
+
+function normalizeTimeoutMs(value) {
+    const n = Number(value ?? DEFAULT_REQUEST_TIMEOUT_MS);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+}
 
 function utf8Base64(text) {
     const bytes = new TextEncoder().encode(text);
@@ -23,7 +28,7 @@ function withCurrentQueryHeader(headers, currentQuery) {
     };
 }
 
-async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery }) {
+async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery, requestTimeoutMs }) {
     assertSafeApiUrl(apiUrl);
     const endpoint = buildChatEndpoint(apiUrl);
     const headers = withCurrentQueryHeader(
@@ -37,16 +42,18 @@ async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature,
         apiUrl, model, messages, temperature, reasoningEffort, stream: true, maxTokens,
     });
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeoutMs = normalizeTimeoutMs(requestTimeoutMs);
+    const controller = timeoutMs > 0 ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
     let res;
     try {
-        res = await fetch(endpoint, {
+        const fetchInit = {
             method: 'POST',
             headers,
             body: JSON.stringify(body),
-            signal: controller.signal,
-        });
+        };
+        if (controller) fetchInit.signal = controller.signal;
+        res = await fetch(endpoint, fetchInit);
 
         if (!res.ok) {
             const errText = await res.text().catch(() => '');
@@ -106,7 +113,7 @@ async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature,
         }
         return content;
     } finally {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
     }
 }
 
@@ -121,7 +128,7 @@ export async function runGeneration(settings, messages, maxTokens) {
         mainApiUrl, mainApiKey, mainApiModel, apiType = 'openai',
         temperature, reasoningEffort,
         autoRetryEnabled = true, maxRetries = 1, secondaryFallbackEnabled = true,
-        secondaryApiUrl, secondaryApiKey, secondaryApiModel, extraHeaders, currentQuery,
+        secondaryApiUrl, secondaryApiKey, secondaryApiModel, extraHeaders, currentQuery, requestTimeoutMs,
     } = settings || {};
 
     if (!mainApiUrl || !mainApiKey) throw new Error('settings.mainApiUrl / mainApiKey missing');
@@ -134,7 +141,7 @@ export async function runGeneration(settings, messages, maxTokens) {
         try {
             return await callOnce({
                 apiUrl: mainApiUrl, apiKey: mainApiKey, model: mainApiModel, apiType,
-                messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery,
+                messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery, requestTimeoutMs,
             });
         } catch (e) {
             lastErr = e;
@@ -148,7 +155,7 @@ export async function runGeneration(settings, messages, maxTokens) {
         try {
             return await callOnce({
                 apiUrl: secondaryApiUrl, apiKey: secondaryApiKey, model: secondaryApiModel || mainApiModel, apiType,
-                messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery,
+                messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery, requestTimeoutMs,
             });
         } catch (e) {
             lastErr = e;

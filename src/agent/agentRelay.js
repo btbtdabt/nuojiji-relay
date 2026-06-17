@@ -57,7 +57,8 @@ export function buildCoordinatorConfig(env) {
         authType: envValue(env, ['AGENT_COORDINATOR_AUTH_TYPE'], 'bearer'),
         model: envValue(env, ['AGENT_COORDINATOR_MODEL'], 'gemini-3.5-flash'),
         sessionId: envValue(env, ['AGENT_COORDINATOR_SESSION_ID'], 'relay-coordinator'),
-        timeoutMs: envNumber(env, ['AGENT_COORDINATOR_TIMEOUT_MS'], 600_000),
+        timeoutMs: envNumber(env, ['AGENT_COORDINATOR_MCP_TIMEOUT_MS', 'AGENT_COORDINATOR_TIMEOUT_MS'], 600_000),
+        geminiTimeoutMs: envNumber(env, ['AGENT_COORDINATOR_AI_TIMEOUT_MS', 'AGENT_COORDINATOR_GEMINI_TIMEOUT_MS'], 0),
         maxToolRounds: Math.max(1, Math.min(32, envNumber(env, ['AGENT_MAX_TOOL_ROUNDS'], 8))),
     };
 }
