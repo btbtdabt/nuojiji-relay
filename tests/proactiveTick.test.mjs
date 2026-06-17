@@ -218,6 +218,78 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
     }
 }
 
+async function testTickUsesInternalAgentRelayForSelfApiUrl() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    let now = 15_000_000;
+    const fetchUrls = [];
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async (url) => {
+        fetchUrls.push(String(url));
+        if (String(url).startsWith('https://relay.example/v1')) {
+            throw new Error('self fetch should not happen');
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'impulse',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}\nReason: {{IMPULSE_REASON}}',
+            proactiveProfile: {
+                weights: { silence: 1, timeOfDay: 0, mood: 0, pendingQuestion: 0, randomLife: 0 },
+                silenceSaturationHours: 0.1,
+                quietHours: [0, 0],
+                threshold: 0.1,
+                randomLifeChancePerDay: 0,
+            },
+            lifeState: { unansweredStreak: 0 },
+            intensity: 'normal',
+            proactiveBias: 0,
+            recentMessages: [{ sender: 'me', text: 'before self relay' }],
+            aiSettings: {
+                mainApiUrl: 'https://relay.example/v1',
+                mainApiKey: 'test-secret',
+                mainApiModel: 'claude-opus-4-8',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assert.deepEqual(fetchUrls, []);
+
+        const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
+        assert.equal(outbox.items.length, 1);
+        assert.match(outbox.items[0].content, /coordinator报错/);
+
+        const events = listDebugEvents(kv);
+        const generationEvent = events.find((event) => event.type === 'proactive_generation');
+        assert.equal(generationEvent.stage, 'complete');
+        assert.equal(generationEvent.generated, true);
+        assert.equal(generationEvent.internalAgentRelay, true);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
 async function testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration() {
     const app = createApp();
     const kv = new FakeKv();
@@ -1167,6 +1239,7 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
 testUpgradeProactiveImageSchema();
 testProactiveTickLockCoversLongGenerationWindow();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
+await testTickUsesInternalAgentRelayForSelfApiUrl();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testTickDropsGeneratedBubbleWhenUserReplySyncHasNoNewTimestamp();
 await testTickKeepsSlowGeneratedBubbleWithoutUserReply();

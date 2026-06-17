@@ -12,6 +12,7 @@ import { createOutboxStore } from '../store/outboxStore.js';
 import { createSubStore } from '../store/subStore.js';
 import { shouldFire, shouldFireInterval } from './impulseEngine.js';
 import { runGeneration } from '../ai/aiCaller.js';
+import { isSelfAgentRelayUrl, runInternalAgentRelayCompletion } from '../agent/internalAgentRelay.js';
 import { dispatchPush } from '../push/pushSender.js';
 import { nowMs, extractPushBodies } from '../util/ids.js';
 import { renderTimeTokens } from '../util/timeTokens.js';
@@ -249,6 +250,10 @@ export async function runProactiveTick(env) {
             const messages = [
                 { role: 'system', content: systemContent },
             ];
+            const useInternalAgentRelay = isSelfAgentRelayUrl(rec.aiSettings?.mainApiUrl, {
+                env,
+                apiKey: rec.aiSettings?.mainApiKey,
+            });
 
             const requestId = `proactive_${rec.userId}_${rec.charId}_${now}`;
             const attemptStartedAt = Date.now();
@@ -278,6 +283,7 @@ export async function runProactiveTick(env) {
                     transcriptChars: transcript.length,
                     responseChars: content ? String(content).length : 0,
                     generationMs,
+                    internalAgentRelay: useInternalAgentRelay,
                     error: error ? debugError(new Error(error)) : null,
                     durationMs: Date.now() - attemptStartedAt,
                     ...extra,
@@ -292,14 +298,13 @@ export async function runProactiveTick(env) {
             };
             const generationStartedAt = Date.now();
             try {
-                content = await runGeneration(
-                    {
-                        ...(rec.aiSettings || {}),
-                        currentQuery: buildProactiveCurrentQuery({ transcript, reason: verdict.reason }),
-                    },
-                    messages,
-                    rec.aiSettings?.maxTokens || null
-                );
+                const generationSettings = {
+                    ...(rec.aiSettings || {}),
+                    currentQuery: buildProactiveCurrentQuery({ transcript, reason: verdict.reason }),
+                };
+                content = useInternalAgentRelay
+                    ? await runInternalAgentRelayCompletion(env, generationSettings, messages, rec.aiSettings?.maxTokens || null)
+                    : await runGeneration(generationSettings, messages, rec.aiSettings?.maxTokens || null);
                 generationMs = Date.now() - generationStartedAt;
             } catch (e) {
                 generationMs = Date.now() - generationStartedAt;

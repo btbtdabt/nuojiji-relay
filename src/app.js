@@ -17,6 +17,7 @@ import { createSubStore, subKey } from './store/subStore.js';
 import { createProactiveStore, PROACTIVE_WINDOW_CAP } from './store/proactiveStore.js';
 import { runGeneration } from './ai/aiCaller.js';
 import { handleAgentChatCompletions, handleAgentDebug, handleAgentModels } from './agent/agentRelay.js';
+import { isSelfAgentRelayUrl, runInternalAgentRelayCompletion } from './agent/internalAgentRelay.js';
 import {
     clipDebugValue,
     debugError,
@@ -35,45 +36,6 @@ const VERSION = '1.0.0';
 const TEMP_PROACTIVE_QUIET_HOURS = [3, 9];
 const GENERATE_INFLIGHT_DUPLICATE_MS = 10 * 60 * 1000;
 const COORDINATOR_ERROR_PREFIX = '【coordinator报错】';
-
-function isSelfAgentRelayUrl(apiUrl, requestUrl) {
-    try {
-        const target = new URL(String(apiUrl || ''));
-        const current = new URL(String(requestUrl || ''));
-        return target.host === current.host && /^\/v1(?:\/|$)/.test(target.pathname);
-    } catch {
-        return false;
-    }
-}
-
-async function runInternalAgentRelayCompletion(env, settings, messages, maxTokens) {
-    const agentBody = {
-        model: settings?.mainApiModel || settings?.model,
-        messages,
-        stream: false,
-        temperature: typeof settings?.temperature === 'number' ? settings.temperature : undefined,
-        reasoning_effort: settings?.reasoningEffort || settings?.reasoning_effort || undefined,
-        max_tokens: maxTokens ?? settings?.maxTokens ?? settings?.max_tokens ?? undefined,
-        auto_retry_enabled: settings?.autoRetryEnabled,
-        max_retries: settings?.maxRetries,
-    };
-    const response = await handleAgentChatCompletions({
-        env,
-        req: { json: async () => agentBody },
-        json: (payload, status = 200) => new Response(JSON.stringify(payload), {
-            status,
-            headers: { 'content-type': 'application/json' },
-        }),
-    });
-    let payload = {};
-    try { payload = await response.json(); } catch { payload = {}; }
-    if (!response.ok) {
-        throw new Error(payload?.error?.message || `internal agent relay HTTP ${response.status}`);
-    }
-    const content = payload?.choices?.[0]?.message?.content;
-    if (content == null || content === '') throw new Error('internal agent relay returned empty content');
-    return content;
-}
 
 function envFlag(env, key) {
     const value = env?.[key] ?? (typeof process !== 'undefined' ? process.env?.[key] : undefined);
@@ -267,7 +229,11 @@ export function createApp() {
         }
 
         const { outbox, sub, proactive } = await getStores(c.env);
-        const useInternalAgentRelay = isSelfAgentRelayUrl(settings?.mainApiUrl, c.req.raw?.url || c.req.url);
+        const useInternalAgentRelay = isSelfAgentRelayUrl(settings?.mainApiUrl, {
+            env: c.env,
+            requestUrl: c.req.raw?.url || c.req.url,
+            apiKey: settings?.mainApiKey,
+        });
 
         // 幂等：同 requestId 在 TTL 内只处理一次。若结果仍在 outbox，返回 accepted
         // 让手机端继续排水；只有结果已被取走/过期才回 409。
