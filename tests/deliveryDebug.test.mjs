@@ -261,6 +261,50 @@ async function testDuplicateGenerateAfterAckStillConflicts() {
     }
 }
 
+async function testGenerateUsesInternalAgentRelayForSelfApiUrl() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+        if (String(url).startsWith('https://relay.example/')) {
+            throw new Error('self fetch should not happen');
+        }
+        throw new Error(`unexpected external fetch: ${url}`);
+    };
+
+    try {
+        const res = await postJson(app, kv, '/generate', {
+            requestId: 'req-self-relay',
+            inboxId: 'inbox',
+            messages: [{ role: 'user', content: 'hello through relay' }],
+            settings: {
+                mainApiUrl: 'https://relay.example/v1',
+                mainApiKey: 'relay-key',
+                mainApiModel: 'claude-opus-4-8',
+                apiType: 'custom',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+        });
+        assert.equal(res.status, 202);
+
+        const listed = await getJson(app, kv, '/outbox?inboxId=inbox&since=0');
+        assert.equal(listed.items.length, 1);
+        assert.equal(listed.items[0].requestId, 'req-self-relay');
+        assert.equal(listed.items[0].error, null);
+        assert.match(listed.items[0].content, /coordinator报错/);
+
+        const events = await debugEvents(kv);
+        assert.ok(events.find((event) => event.type === 'agent_chat' && event.stage === 'coordinator'));
+        assert.ok(events.find((event) => event.type === 'relay_generate'
+            && event.stage === 'complete'
+            && event.generated === true
+            && event.internalAgentRelay === true));
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 async function testPushDiagDebugRecordsMaskedSubscriptions() {
     const app = createApp();
     const kv = new FakeKv();
@@ -293,5 +337,6 @@ await testOutboxDebugShowsItemsHiddenBySince();
 await testProactiveSyncDebugRecordsLatestUserMessage();
 await testDuplicateGenerateWhileInFlightReturnsPending();
 await testDuplicateGenerateAfterAckStillConflicts();
+await testGenerateUsesInternalAgentRelayForSelfApiUrl();
 await testPushDiagDebugRecordsMaskedSubscriptions();
 console.log('deliveryDebug tests passed');
