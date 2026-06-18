@@ -305,6 +305,75 @@ async function testGenerateUsesInternalAgentRelayForSelfApiUrl() {
     }
 }
 
+async function testGenerateAddsUserClockFromRegisteredTimeSpec() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const originalFetch = globalThis.fetch;
+    const originalNow = Date.now;
+    let capturedBody = null;
+    Date.now = () => Date.UTC(2026, 5, 18, 5, 2);
+    globalThis.fetch = async (_url, init) => {
+        capturedBody = JSON.parse(init.body);
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: '{"t":"text","c":"ok"}' } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const register = await postJson(app, kv, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            promptTemplate: 'unused {{RECENT_MESSAGES}}',
+            proactiveProfile: { threshold: 0.5 },
+            lifeState: {},
+            recentMessages: [],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+            },
+            timeSpec: { userUtcOffsetSeconds: -4 * 3600 },
+            enabled: true,
+        });
+        assert.equal(register.status, 200);
+
+        const res = await postJson(app, kv, '/generate', {
+            requestId: 'req-clock',
+            inboxId: 'inbox',
+            messages: [
+                {
+                    role: 'system',
+                    content: [
+                        '[USER] 艾米|女',
+                        '[BIO] NOW:2026年6月18日 星期四 01:02【凌晨】weekday | Live conversation',
+                    ].join('\n'),
+                },
+                { role: 'user', content: '现在几点' },
+            ],
+            settings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            meta: { userId: 'user', charId: 'char' },
+        });
+        assert.equal(res.status, 202);
+        assert.match(capturedBody.messages[0].content, /USER_LOCAL_TIME=2026年6月18日 星期四 01:02/);
+        assert.match(capturedBody.messages[0].content, /judge 艾米's date, sleep, meals, and availability by NOW/);
+    } finally {
+        globalThis.fetch = originalFetch;
+        Date.now = originalNow;
+    }
+}
+
 async function testPushDiagDebugRecordsMaskedSubscriptions() {
     const app = createApp();
     const kv = new FakeKv();
@@ -338,5 +407,6 @@ await testProactiveSyncDebugRecordsLatestUserMessage();
 await testDuplicateGenerateWhileInFlightReturnsPending();
 await testDuplicateGenerateAfterAckStillConflicts();
 await testGenerateUsesInternalAgentRelayForSelfApiUrl();
+await testGenerateAddsUserClockFromRegisteredTimeSpec();
 await testPushDiagDebugRecordsMaskedSubscriptions();
 console.log('deliveryDebug tests passed');

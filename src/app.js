@@ -31,6 +31,7 @@ import { dispatchPush } from './push/pushSender.js';
 import { getVapidPublicKey } from './push/webPush.js';
 import { makeMessageId, nowMs, extractPushBodies } from './util/ids.js';
 import { mergePendingCommitments, parseCommitmentsFromContent } from './util/commitments.js';
+import { addUserClockToMessages } from './util/promptClock.js';
 
 const VERSION = '1.0.0';
 const TEMP_PROACTIVE_QUIET_HOURS = [3, 9];
@@ -261,6 +262,23 @@ export function createApp() {
         const proactiveCharId = meta?.charId != null ? String(meta.charId) : null;
         const replyGenerationClaimId = (proactiveUserId && proactiveCharId)
             ? `reply_${requestId}_${startedAt}` : null;
+        let proactiveRecord = null;
+        if (proactiveUserId && proactiveCharId) {
+            try {
+                proactiveRecord = await proactive.get?.(inboxId, proactiveUserId, proactiveCharId);
+            } catch { /* no proactive clock context */ }
+        }
+        const clockTimeSpec = proactiveRecord
+            ? {
+                ...(proactiveRecord.timeSpec || {}),
+                charUtcOffsetSeconds: typeof proactiveRecord.charUtcOffsetSeconds === 'number'
+                    ? proactiveRecord.charUtcOffsetSeconds
+                    : proactiveRecord.timeSpec?.charUtcOffsetSeconds,
+            }
+            : null;
+        const modelMessages = clockTimeSpec
+            ? addUserClockToMessages(messages, { timeSpec: clockTimeSpec, now: startedAt })
+            : messages;
         if (meta?.userId != null && meta?.charId != null) {
             try {
                 await proactive.patch(inboxId, proactiveUserId, proactiveCharId, {
@@ -286,10 +304,11 @@ export function createApp() {
             generationClaimId: replyGenerationClaimId,
             hasProactiveContext: !!(proactiveUserId && proactiveCharId),
             internalAgentRelay: useInternalAgentRelay,
-            request: summarizeMessages(messages),
+            request: summarizeMessages(modelMessages),
             aiSettings: summarizeAiSettings(settings),
             full: debugFull ? {
                 original_messages: clipDebugValue(messages, debugCharLimit),
+                model_messages: clipDebugValue(modelMessages, debugCharLimit),
                 meta: clipDebugValue(meta || {}, debugCharLimit),
             } : undefined,
         });
@@ -305,8 +324,8 @@ export function createApp() {
         try {
             try {
                 const content = useInternalAgentRelay
-                    ? await runInternalAgentRelayCompletion(c.env, settings, messages, maxTokens)
-                    : await runGeneration(settings, messages, maxTokens);
+                    ? await runInternalAgentRelayCompletion(c.env, settings, modelMessages, maxTokens)
+                    : await runGeneration(settings, modelMessages, maxTokens);
                 item = {
                     id, requestId,
                     charId: meta?.charId ?? null, roundId: meta?.roundId ?? null, userId: meta?.userId ?? null,
@@ -372,7 +391,7 @@ export function createApp() {
             roundId: item.roundId,
             generated: !item.error,
             maxTokens: maxTokens ?? null,
-            request: summarizeMessages(messages),
+            request: summarizeMessages(modelMessages),
             aiSettings: summarizeAiSettings(settings),
             internalAgentRelay: useInternalAgentRelay,
             responseChars: item.content ? String(item.content).length : 0,
@@ -382,6 +401,7 @@ export function createApp() {
             durationMs: Date.now() - startedAt,
             full: debugFull ? {
                 original_messages: clipDebugValue(messages, debugCharLimit),
+                model_messages: clipDebugValue(modelMessages, debugCharLimit),
                 response: clipDebugValue(item.content || '', debugCharLimit),
                 meta: clipDebugValue(meta || {}, debugCharLimit),
             } : undefined,

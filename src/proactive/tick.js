@@ -16,6 +16,7 @@ import { isSelfAgentRelayUrl, runInternalAgentRelayCompletion } from '../agent/i
 import { dispatchPush } from '../push/pushSender.js';
 import { nowMs, extractPushBodies } from '../util/ids.js';
 import { renderTimeTokens } from '../util/timeTokens.js';
+import { addUserClockToPrompt } from '../util/promptClock.js';
 import {
     formatPendingCommitmentsForPrompt,
     mergePendingCommitments,
@@ -258,7 +259,18 @@ export async function runProactiveTick(env) {
                 { now, utcOffsetSeconds }
             );
             const systemContent = upgradeProactiveImageSchema(
-                fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory }) + commitmentContext
+                addUserClockToPrompt(
+                    fillTemplate(timedTemplate, { transcript, reason: verdict.reason, memory }) + commitmentContext,
+                    {
+                        timeSpec: {
+                            ...(rec.timeSpec || {}),
+                            charUtcOffsetSeconds: typeof rec.charUtcOffsetSeconds === 'number'
+                                ? rec.charUtcOffsetSeconds
+                                : rec.timeSpec?.charUtcOffsetSeconds,
+                        },
+                        now,
+                    }
+                )
             );
             const messages = [
                 { role: 'system', content: systemContent },
