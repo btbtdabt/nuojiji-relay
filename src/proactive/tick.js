@@ -346,20 +346,23 @@ export async function runProactiveTick(env) {
             //    既不会 API 持续报错时每分钟 cron 重试烧钱，也不让用户等满完整冷却才收到下一条。
             //    失败不入 outbox（手机端对 error item 一律丢弃）、不发推送、不推进 lifeState/streak。
             if (error) {
-                const failMark = now - (BACKEND_FIRE_COOLDOWN_MS - BACKEND_FAIL_COOLDOWN_MS);
+                const finishedAt = nowMs();
+                const failMark = finishedAt - (BACKEND_FIRE_COOLDOWN_MS - BACKEND_FAIL_COOLDOWN_MS);
                 await proactive.claimFire(rec.inboxId, rec.userId, rec.charId, failMark);
                 console.warn('[proactive] generation failed, short cooldown 5min:', error);
                 await logAttempt('complete', { generated: false, outbox: false });
                 continue;
             }
 
+            const completedAt = nowMs();
             const item = {
                 id: `relay_${requestId}`, requestId,
                 charId: rec.charId, userId: rec.userId,
-                roundId: requestId, content, error, createdAt: nowMs(),
+                roundId: requestId, content, error, createdAt: completedAt,
                 proactive: true,
             };
             await outbox.put(rec.inboxId, item);
+            await proactive.claimFire(rec.inboxId, rec.userId, rec.charId, completedAt);
 
             // 🔑 把 char 自己刚发的消息追加进后端滑窗，否则 user 一直不回复时，下次 tick 用的
             //    还是同一份旧上下文 → AI 看不到自己发过什么 → 反复说类似的话 = 重复消息。
@@ -376,7 +379,8 @@ export async function runProactiveTick(env) {
             }
 
             // 简单更新后端 lifeState（完整 evolve 仍在手机端，下次 sync 覆盖）
-            // lastFiredAt 已在生成前抢占落库，这里不再重复设。
+            // lastFiredAt 生成前抢占用于防重入；完成后刷新到实际写出时间，
+            // 避免慢生成把冷却时间吃完，刚写出就立刻开启下一轮。
             const ls = rec.lifeState || {};
             // 📈 自增「连续未回复」：后端自己发了一条而 user 没回（user 回了的话手机端 sync 会把
             //    streak 清 0 并覆盖整份 lifeState）。streak 是真人模式防轰炸的核心闸门
@@ -395,7 +399,7 @@ export async function runProactiveTick(env) {
                 : {};
             await proactive.patch(rec.inboxId, rec.userId, rec.charId, {
                 _serverFireWindowPatch: true,
-                lifeState: { ...ls, lastImpulseAt: now, lastProactiveSentAt: now, unansweredStreak: nextStreak },
+                lifeState: { ...ls, lastImpulseAt: completedAt, lastProactiveSentAt: completedAt, unansweredStreak: nextStreak },
                 recentMessages: nextWindow,
                 ...commitmentPatch,
             });

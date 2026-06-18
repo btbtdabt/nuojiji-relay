@@ -94,6 +94,73 @@ function testProactiveTickLockCoversLongGenerationWindow() {
     assert.equal(PROACTIVE_TICK_LOCK_TTL_MS, PROACTIVE_GENERATION_CLAIM_TTL_MS);
 }
 
+async function testSlowProactiveRefreshesCooldownAtCompletion() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    let now = 9_000_000;
+    let aiCalls = 0;
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async () => {
+        aiCalls++;
+        now += BACKEND_FIRE_COOLDOWN_MS + 60_000;
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'slow but current' }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'interval',
+            interval: 1,
+            intervalUnit: 'minutes',
+            probability: 'high',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}',
+            lifeState: { unansweredStreak: 0 },
+            recentMessages: [{ sender: 'me', text: 'before slow proactive' }],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            lastFiredAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assert.equal(aiCalls, 1);
+        const completedAt = now;
+        const stored = parseStoredPair(kv);
+        assert.equal(stored.lifeState.lastProactiveSentAt, completedAt);
+        assert.equal(Number(kv.map.get('pf:inbox:user:char')), completedAt);
+
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assert.equal(aiCalls, 1);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
 async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
     const app = createApp();
     const kv = new FakeKv();
@@ -1238,6 +1305,7 @@ async function testActiveGenerationClaimBlocksWithinConfiguredTtl() {
 
 testUpgradeProactiveImageSchema();
 testProactiveTickLockCoversLongGenerationWindow();
+await testSlowProactiveRefreshesCooldownAtCompletion();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickUsesInternalAgentRelayForSelfApiUrl();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();

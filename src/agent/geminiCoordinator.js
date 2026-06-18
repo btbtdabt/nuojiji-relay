@@ -7,6 +7,7 @@ const DEFAULT_COORDINATOR_BASE_URL = '';
 const DEFAULT_COORDINATOR_MODEL = 'gemini-3.5-flash';
 const DEFAULT_MCP_TIMEOUT_MS = 600_000;
 const DEFAULT_GEMINI_TIMEOUT_MS = 0;
+const DEFAULT_GEMINI_STREAM = false;
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_GEMINI_RETRY_ATTEMPTS = 2;
 const RETRYABLE_GEMINI_STATUSES = new Set([429, 500, 502, 503, 504, 520, 522, 524]);
@@ -559,9 +560,11 @@ async function callGeminiGenerateContentOnce({
     contents,
     functionDeclarations,
     timeoutMs,
+    stream = DEFAULT_GEMINI_STREAM,
     fetchImpl = fetch,
 }) {
-    const endpoint = buildGeminiEndpoint(baseUrl, model, { stream: true });
+    const useStream = stream === true;
+    const endpoint = buildGeminiEndpoint(baseUrl, model, { stream: useStream });
     assertSafeApiUrl(endpoint);
 
     const body = {
@@ -642,7 +645,7 @@ async function callGeminiGenerateContent(options) {
                 attempt: attempt + 1,
                 max_attempts: retryAttempts + 1,
                 ok: true,
-                transport: candidate?._transport || 'streamGenerateContent',
+                transport: candidate?._transport || (options.stream ? 'streamGenerateContent' : 'generateContent'),
                 duration_ms: Date.now() - attemptStartedAt,
             });
             return candidate;
@@ -655,7 +658,7 @@ async function callGeminiGenerateContent(options) {
                 ok: false,
                 status: Number(error?.status) || null,
                 retryable,
-                transport: error?.transport || 'streamGenerateContent',
+                transport: error?.transport || (options.stream ? 'streamGenerateContent' : 'generateContent'),
                 duration_ms: Date.now() - attemptStartedAt,
                 error: String(error?.message || error).slice(0, 300),
             });

@@ -745,7 +745,7 @@ testCoordinatorQueryHintIgnoresProactivePlaceholder();
 testCoordinatorQueryHintPrefersRealUserText();
 testNuojijiReplyDetector();
 testGeminiFunctionResponseUsesUserRole();
-async function testCoordinatorParsesStreamingNoRelevantInfo() {
+async function testCoordinatorParsesNonStreamingNoRelevantInfo() {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (_url, init) => {
         const body = JSON.parse(String(init?.body || '{}'));
@@ -777,10 +777,10 @@ async function testCoordinatorParsesStreamingNoRelevantInfo() {
         throw new Error(`unexpected MCP method ${body.method}`);
     };
 
-    let sawStreamEndpoint = false;
+    let sawGenerateEndpoint = false;
     const geminiFetch = async (url) => {
-        sawStreamEndpoint = /:streamGenerateContent\?alt=sse$/.test(String(url));
-        const event = {
+        sawGenerateEndpoint = /:generateContent$/.test(String(url));
+        const body = {
             candidates: [{
                 content: {
                     role: 'model',
@@ -788,9 +788,9 @@ async function testCoordinatorParsesStreamingNoRelevantInfo() {
                 },
             }],
         };
-        return new Response(`: gateway-start\n\ndata: ${JSON.stringify(event)}\n\n`, {
+        return new Response(JSON.stringify(body), {
             status: 200,
-            headers: { 'content-type': 'text/event-stream' },
+            headers: { 'content-type': 'application/json' },
         });
     };
 
@@ -805,15 +805,15 @@ async function testCoordinatorParsesStreamingNoRelevantInfo() {
             timeoutMs: 1000,
         });
 
-        assert.equal(sawStreamEndpoint, true);
+        assert.equal(sawGenerateEndpoint, true);
         assert.equal(result.relevantInfo, '');
-        assert.equal(result.debug.gemini_attempts[0].transport, 'streamGenerateContent');
+        assert.equal(result.debug.gemini_attempts[0].transport, 'generateContent');
     } finally {
         globalThis.fetch = originalFetch;
     }
 }
 
-async function testCoordinatorStreamingToolLoopPreservesThoughtSignature() {
+async function testCoordinatorToolLoopPreservesThoughtSignature() {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (_url, init) => {
         const body = JSON.parse(String(init?.body || '{}'));
@@ -868,7 +868,7 @@ async function testCoordinatorStreamingToolLoopPreservesThoughtSignature() {
         const body = JSON.parse(String(init?.body || '{}'));
         geminiBodies.push(body);
         if (geminiBodies.length === 1) {
-            const event = {
+            const responseBody = {
                 candidates: [{
                     content: {
                         role: 'model',
@@ -882,12 +882,12 @@ async function testCoordinatorStreamingToolLoopPreservesThoughtSignature() {
                     },
                 }],
             };
-            return new Response(`data: ${JSON.stringify(event)}\n\n`, {
+            return new Response(JSON.stringify(responseBody), {
                 status: 200,
-                headers: { 'content-type': 'text/event-stream' },
+                headers: { 'content-type': 'application/json' },
             });
         }
-        const event = {
+        const responseBody = {
             candidates: [{
                 content: {
                     role: 'model',
@@ -895,9 +895,9 @@ async function testCoordinatorStreamingToolLoopPreservesThoughtSignature() {
                 },
             }],
         };
-        return new Response(`data: ${JSON.stringify(event)}\n\n`, {
+        return new Response(JSON.stringify(responseBody), {
             status: 200,
-            headers: { 'content-type': 'text/event-stream' },
+            headers: { 'content-type': 'application/json' },
         });
     };
 
@@ -931,8 +931,8 @@ async function testCoordinatorStreamingToolLoopPreservesThoughtSignature() {
 }
 
 await testAgentStreamUsesSeparateStopChunk();
-await testCoordinatorParsesStreamingNoRelevantInfo();
-await testCoordinatorStreamingToolLoopPreservesThoughtSignature();
+await testCoordinatorParsesNonStreamingNoRelevantInfo();
+await testCoordinatorToolLoopPreservesThoughtSignature();
 await testCoordinatorRetriesTransientGeminiFailures();
 await testCoordinatorFailureSkipsFinalModel();
 await testMissingCoordinatorConfigSkipsFinalModel();
