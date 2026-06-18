@@ -39,7 +39,10 @@ function testUserOffsetStillDrivesMainNowTokensWithoutCharacterOffset() {
         now,
     );
 
-    assert.equal(rendered, 'time=20:00 period=period-20 clock=');
+    assert.equal(
+        rendered,
+        'time=20:00 period=period-20 clock= | USER_LOCAL_TIME=2026年6月15日 星期一 20:00 (same as NOW in this chat; judge the user\'s date, sleep, meals, and availability by NOW)',
+    );
 }
 
 function testCharacterOffsetIsFallbackWhenUserOffsetIsUnavailable() {

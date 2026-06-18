@@ -66,6 +66,8 @@ export function renderTimeTokens(template, timeSpec, nowMs, lastInteractionAt = 
             ? 'same timezone'
             : (diffHours > 0 ? `you are ${Math.abs(diffHours)}h AHEAD of user` : `you are ${Math.abs(diffHours)}h BEHIND user`);
         userClock = ` | YOUR_LOCAL_TIME(${timeSpec.charName || 'AI'})=${dateStr} ${timeStr}, USER_LOCAL_TIME=${userDate} ${userTime} (${diffDesc}; judge the user's date, sleep, meals, and availability by USER_LOCAL_TIME)`;
+    } else if (charOff == null && userOff != null) {
+        userClock = ` | USER_LOCAL_TIME=${dateStr} ${timeStr} (same as NOW in this chat; judge the user's date, sleep, meals, and availability by NOW)`;
     }
 
     // 🕒 距上次互动的相对时间 —— 用 tick 真实 now 重算（治「后端生成的消息时间还是用户在线那刻」bug）。
