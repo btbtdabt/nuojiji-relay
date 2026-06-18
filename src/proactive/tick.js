@@ -69,6 +69,13 @@ function isCoordinatorErrorReply(content) {
     return String(content || '').includes(COORDINATOR_ERROR_PREFIX);
 }
 
+function hasCoordinatorErrorInTranscript(recentMessages) {
+    return Array.isArray(recentMessages) && recentMessages.some((message) => {
+        const text = String(message?.text ?? message?.content ?? '');
+        return text.includes(COORDINATOR_ERROR_PREFIX);
+    });
+}
+
 export function upgradeProactiveImageSchema(systemContent) {
     let text = String(systemContent || '');
     const imageObjectSchema = '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:XXX] EN desc","loc":"地点","time":"时间"}';
@@ -158,6 +165,7 @@ export async function runProactiveTick(env) {
         try {
             // 走线下剧情中：跳过该 inbox 的所有主动生成（用户在前台沉浸剧情，不该被线上消息打断）
             if (await isInboxPaused(rec.inboxId)) continue;
+            if (hasCoordinatorErrorInTranscript(rec.recentMessages)) continue;
 
             const activeGenerationStartedAt = Number(rec.generationStartedAt) || 0;
             if (activeGenerationStartedAt && (now - activeGenerationStartedAt) < PROACTIVE_GENERATION_CLAIM_TTL_MS) continue;

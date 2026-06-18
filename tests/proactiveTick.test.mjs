@@ -358,6 +358,77 @@ async function testTickUsesInternalAgentRelayForSelfApiUrl() {
     }
 }
 
+async function testTickSkipsWhenTranscriptContainsCoordinatorError() {
+    const app = createApp();
+    const kv = new FakeKv();
+    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const originalNow = Date.now;
+    const originalRandom = Math.random;
+    const originalFetch = globalThis.fetch;
+    let now = 18_000_000;
+    let aiCalls = 0;
+
+    Date.now = () => now;
+    Math.random = () => 0;
+    globalThis.fetch = async () => {
+        aiCalls++;
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'should not generate' }) } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const registerRes = await postJson(app, env, '/proactive/register', {
+            inboxId: 'inbox',
+            userId: 'user',
+            charId: 'char',
+            enabled: true,
+            mode: 'impulse',
+            promptTemplate: 'Recent:\n{{RECENT_MESSAGES}}\nReason: {{IMPULSE_REASON}}',
+            proactiveProfile: {
+                weights: { silence: 1, timeOfDay: 0, mood: 0, pendingQuestion: 0, randomLife: 0 },
+                silenceSaturationHours: 0.1,
+                quietHours: [0, 0],
+                threshold: 0.1,
+                randomLifeChancePerDay: 0,
+            },
+            lifeState: { unansweredStreak: 0 },
+            intensity: 'normal',
+            proactiveBias: 0,
+            recentMessages: [
+                { sender: 'me', text: 'before' },
+                { sender: 'char', text: '【coordinator报错】 Network connection lost.' },
+            ],
+            aiSettings: {
+                mainApiUrl: 'https://api.openai.example',
+                mainApiKey: 'test-key',
+                mainApiModel: 'test-model',
+                apiType: 'openai',
+                autoRetryEnabled: false,
+                secondaryFallbackEnabled: false,
+            },
+            proactiveEnabledAt: now - 60 * 60_000,
+            lastInteractionAt: now - 60 * 60_000,
+            lastFiredAt: now - 60 * 60_000,
+            mcpContextServers: [],
+        });
+        assert.equal(registerRes.status, 200);
+
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
+        assert.equal(aiCalls, 0);
+        assert.equal(kv.map.has('pf:inbox:user:char'), false);
+        const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
+        assert.equal(outbox.items.length, 0);
+    } finally {
+        Date.now = originalNow;
+        Math.random = originalRandom;
+        globalThis.fetch = originalFetch;
+    }
+}
+
 async function testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration() {
     const app = createApp();
     const kv = new FakeKv();
@@ -1309,6 +1380,7 @@ testProactiveTickLockCoversLongGenerationWindow();
 await testSlowProactiveRefreshesCooldownAtCompletion();
 await testTickPersistsGeneratedBubbleForNextContextAfterStaleSync();
 await testTickUsesInternalAgentRelayForSelfApiUrl();
+await testTickSkipsWhenTranscriptContainsCoordinatorError();
 await testTickDropsGeneratedBubbleWhenUserRepliesDuringGeneration();
 await testTickDropsGeneratedBubbleWhenUserReplySyncHasNoNewTimestamp();
 await testTickKeepsSlowGeneratedBubbleWithoutUserReply();
