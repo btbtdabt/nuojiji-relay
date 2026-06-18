@@ -3,6 +3,12 @@
 import { createRequire } from 'node:module';
 import { makePairKey, mergeProactiveRecord, proactiveRecordsBehaviorallyEqual } from './proactiveStore.js';
 
+function tickLockIsActive(lockUntil, now, ttlMs) {
+    const until = Number(lockUntil) || 0;
+    if (until <= now) return false;
+    return (until - now) <= Math.max(60_000, Number(ttlMs) || 0);
+}
+
 // 计算式 require：阻止 esbuild/wrangler 把 better-sqlite3(Node-only)静态打进 Workers bundle。
 function loadSqlite() {
     const require = createRequire(import.meta.url);
@@ -80,8 +86,9 @@ export class SqliteProactiveStore {
     // 🔒 tick 重入锁（node-cron 已有 _ticking 兜底，这里与 KV 接口对齐多一层）
     async acquireTickLock(ttlMs = 120000) {
         const row = this.db.prepare('SELECT lockUntil FROM tick_lock WHERE id = 1').get();
-        if (row && Number(row.lockUntil) > Date.now()) return false;
-        this.db.prepare('INSERT OR REPLACE INTO tick_lock (id, lockUntil) VALUES (1, ?)').run(Date.now() + ttlMs);
+        const now = Date.now();
+        if (row && tickLockIsActive(row.lockUntil, now, ttlMs)) return false;
+        this.db.prepare('INSERT OR REPLACE INTO tick_lock (id, lockUntil) VALUES (1, ?)').run(now + ttlMs);
         return true;
     }
     async releaseTickLock() { this.db.prepare('DELETE FROM tick_lock WHERE id = 1').run(); }

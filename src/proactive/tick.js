@@ -92,7 +92,7 @@ function commitmentUtcOffsetSeconds(rec) {
         : (typeof rec.charUtcOffsetSeconds === 'number' ? rec.charUtcOffsetSeconds : null);
 }
 
-export const PROACTIVE_TICK_LOCK_TTL_MS = 24 * 60 * 60 * 1000;
+export const PROACTIVE_TICK_LOCK_TTL_MS = PROACTIVE_GENERATION_CLAIM_TTL_MS;
 
 // 单轮 tick 的墙钟预算：Workers scheduled 有 CPU/时长上限，串行遍历所有 pair 同步调 AI
 //   （每个最长 180s）必然超时被杀 → 排后面的 pair 永不触发。给一个保守预算，超了就停，
@@ -110,8 +110,8 @@ export async function runProactiveTick(env) {
 
     // 🔒 重入锁：Workers scheduled 无重入守卫，tick 超 60s 时下一轮 cron 会并发 → 同一 pair 双发双扣费。
     //    抢不到锁（已有 tick 在跑）就直接退出本轮。锁带 TTL，tick 崩溃也会自动释放。
-    //    AI 生成默认不再设置本地 AbortController 超时；锁给一天级兜底，正常 finally 会立即释放，
-    //    crash/平台杀掉时再靠 TTL 自动恢复，避免长生成中途下一轮 cron 并发空耗。
+    //    AI 生成默认不再设置本地 AbortController 超时；正常 finally 会立即释放，
+    //    crash/平台杀掉时靠有界 TTL 自动恢复，避免主动消息静默停一整天。
     const TICK_LOCK_TTL_MS = PROACTIVE_TICK_LOCK_TTL_MS;
     let lockHeld = false;
     try { lockHeld = await proactive.acquireTickLock?.(TICK_LOCK_TTL_MS); } catch { lockHeld = true; /* 不支持锁的实现照旧跑 */ }

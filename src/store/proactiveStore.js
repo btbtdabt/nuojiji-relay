@@ -107,6 +107,12 @@ function cloneRecord(record) {
     return JSON.parse(JSON.stringify(record));
 }
 
+function tickLockIsActive(lockUntil, now, ttlMs) {
+    const until = Number(lockUntil) || 0;
+    if (until <= now) return false;
+    return (until - now) <= Math.max(60_000, Number(ttlMs) || 0);
+}
+
 function recordForWrite(rawPrev, merged, patch) {
     const out = { ...merged };
     if (!Object.prototype.hasOwnProperty.call(patch || {}, 'lastFiredAt')) {
@@ -368,8 +374,9 @@ export class MemoryProactiveStore {
     }
     // 🔒 tick 重入锁（单进程，node-cron 已有 _ticking 兜底，这里多一层与 KV 接口对齐）
     async acquireTickLock(ttlMs = 120000) {
-        if (this._tickLockUntil > Date.now()) return false;
-        this._tickLockUntil = Date.now() + ttlMs;
+        const now = Date.now();
+        if (tickLockIsActive(this._tickLockUntil, now, ttlMs)) return false;
+        this._tickLockUntil = now + ttlMs;
         return true;
     }
     async releaseTickLock() { this._tickLockUntil = 0; }
@@ -499,8 +506,9 @@ export class KvProactiveStore {
     //    用短 TTL 防 tick 崩溃后锁永久残留。返回 true=抢到锁，false=已有别的 tick 在跑。
     async acquireTickLock(ttlMs = 120000) {
         const existing = await this.kv.get('tick:lock');
-        if (existing && Number(existing) > Date.now()) return false;
-        await this.kv.put('tick:lock', String(Date.now() + ttlMs), { expirationTtl: Math.ceil(ttlMs / 1000) });
+        const now = Date.now();
+        if (tickLockIsActive(existing, now, ttlMs)) return false;
+        await this.kv.put('tick:lock', String(now + ttlMs), { expirationTtl: Math.ceil(ttlMs / 1000) });
         return true;
     }
     async releaseTickLock() { await this.kv.delete('tick:lock'); }

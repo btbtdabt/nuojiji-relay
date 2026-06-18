@@ -91,7 +91,7 @@ function testUpgradeProactiveImageSchema() {
 }
 
 function testProactiveTickLockCoversLongGenerationWindow() {
-    assert.equal(PROACTIVE_TICK_LOCK_TTL_MS >= 24 * 60 * 60 * 1000, true);
+    assert.equal(PROACTIVE_TICK_LOCK_TTL_MS, PROACTIVE_GENERATION_CLAIM_TTL_MS);
 }
 
 async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {

@@ -983,6 +983,38 @@ async function testKvNoopFirePatchRepairsRuntimeMirrors() {
     assert.equal(await kv.get('pf:inbox:user:char'), '30000');
 }
 
+async function testMemoryTickLockOverridesStaleLongFutureLock() {
+    const store = new MemoryProactiveStore();
+    const originalNow = Date.now;
+    let now = 1_000_000;
+    Date.now = () => now;
+    try {
+        assert.equal(await store.acquireTickLock(60_000), true);
+        assert.equal(await store.acquireTickLock(60_000), false);
+        store._tickLockUntil = now + 24 * 60 * 60 * 1000;
+        assert.equal(await store.acquireTickLock(60_000), true);
+    } finally {
+        Date.now = originalNow;
+    }
+}
+
+async function testKvTickLockOverridesStaleLongFutureLock() {
+    const kv = new FakeKv();
+    const store = new KvProactiveStore(kv);
+    const originalNow = Date.now;
+    let now = 2_000_000;
+    Date.now = () => now;
+    try {
+        assert.equal(await store.acquireTickLock(60_000), true);
+        assert.equal(await store.acquireTickLock(60_000), false);
+        await kv.put('tick:lock', String(now + 24 * 60 * 60 * 1000));
+        assert.equal(await store.acquireTickLock(60_000), true);
+        assert.equal(await kv.get('tick:lock'), String(now + 60_000));
+    } finally {
+        Date.now = originalNow;
+    }
+}
+
 testMergeKeepsNewerServerTiming();
 testMergeAcceptsNewerClientTiming();
 testMergeAllowsStreakResetAfterUserReply();
@@ -1016,4 +1048,6 @@ await testKvGetAppliesFireMirror();
 await testKvPatchRepairsMissingIndexWhenChanged();
 await testKvPatchRepairsMissingIndexWhenUnchanged();
 await testKvNoopFirePatchRepairsRuntimeMirrors();
+await testMemoryTickLockOverridesStaleLongFutureLock();
+await testKvTickLockOverridesStaleLongFutureLock();
 console.log('proactiveStore tests passed');
