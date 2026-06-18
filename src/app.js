@@ -853,7 +853,34 @@ export function createApp() {
             pairs: rows.map(r => ({
                 userId: r.userId, charId: r.charId, enabled: r.enabled,
                 windowSize: (r.recentMessages || []).length,
-                lastFiredAt: r.lastFiredAt || 0, updatedAt: r.updatedAt,
+                mode: r.mode || 'impulse',
+                interval: r.interval || null,
+                intervalUnit: r.intervalUnit || '',
+                probability: r.probability || '',
+                intensity: r.intensity || '',
+                proactiveBias: typeof r.proactiveBias === 'number' ? r.proactiveBias : null,
+                quietHours: Array.isArray(r.quietHours) ? r.quietHours : [],
+                charUtcOffsetSeconds: typeof r.charUtcOffsetSeconds === 'number' ? r.charUtcOffsetSeconds : null,
+                userUtcOffsetSeconds: typeof r.timeSpec?.userUtcOffsetSeconds === 'number'
+                    ? r.timeSpec.userUtcOffsetSeconds : null,
+                lastInteractionAt: r.lastInteractionAt || 0,
+                proactiveEnabledAt: r.proactiveEnabledAt || 0,
+                lastFiredAt: r.lastFiredAt || 0,
+                updatedAt: r.updatedAt,
+                generationStartedAt: r.generationStartedAt || 0,
+                unansweredStreak: Number(r.lifeState?.unansweredStreak) || 0,
+                threshold: typeof r.proactiveProfile?.threshold === 'number' ? r.proactiveProfile.threshold : null,
+                randomLifeChancePerDay: typeof r.proactiveProfile?.randomLifeChancePerDay === 'number'
+                    ? r.proactiveProfile.randomLifeChancePerDay : null,
+                latestSender: Array.isArray(r.recentMessages) && r.recentMessages.length
+                    ? String(r.recentMessages[r.recentMessages.length - 1]?.sender || r.recentMessages[r.recentMessages.length - 1]?.role || '')
+                    : '',
+                latestPreview: Array.isArray(r.recentMessages) && r.recentMessages.length
+                    ? String(r.recentMessages[r.recentMessages.length - 1]?.text ?? r.recentMessages[r.recentMessages.length - 1]?.content ?? '').slice(0, 160)
+                    : '',
+                hasCoordinatorErrorInWindow: Array.isArray(r.recentMessages)
+                    ? r.recentMessages.some(m => String(m?.text ?? m?.content ?? '').includes(COORDINATOR_ERROR_PREFIX))
+                    : false,
                 registerMeta: r.registerMeta || null,
             })),
         });
