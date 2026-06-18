@@ -107,6 +107,7 @@ function testEnvConfigAliases() {
         AGENT_COORDINATOR_API_KEY: 'gateway-token',
         AGENT_COORDINATOR_BASE_URL: 'https://brain.example.com/v1beta',
         AGENT_COORDINATOR_SESSION_ID: 'agent-coordinator',
+        AGENT_COORDINATOR_STREAM: '0',
         AGENT_FINAL_API_URL: 'https://claude-proxy.example.com',
         AGENT_FINAL_API_KEY: 'final-key',
         AGENT_FINAL_OMBRE_SESSION_ID: 'main',
@@ -120,19 +121,48 @@ function testEnvConfigAliases() {
     assert.equal(buildCoordinatorConfig(env).baseUrl, 'https://brain.example.com/v1beta');
     assert.equal(buildCoordinatorConfig(env).authType, 'bearer');
     assert.equal(buildCoordinatorConfig(env).sessionId, 'agent-coordinator');
+    assert.equal(buildCoordinatorConfig(env).geminiStream, false);
     assert.equal(buildFinalSettings(env).mainApiModel, 'claude-opus-4-8');
     assert.deepEqual(buildFinalSettings(env).extraHeaders, { 'X-Ombre-Session-Id': 'main' });
     assert.equal(buildFinalSettings(env).currentQuery, '');
 }
 
 function testCoordinatorConfigHasNoDirectGeminiDefault() {
-    const config = buildCoordinatorConfig({});
-    assert.equal(config.baseUrl, '');
-    assert.equal(config.apiKey, '');
-    assert.equal(config.authType, 'bearer');
-    assert.equal(config.sessionId, 'relay-coordinator');
-    assert.equal(config.timeoutMs, 600_000);
-    assert.equal(config.geminiTimeoutMs, 0);
+    const keys = [
+        'AGENT_COORDINATOR_API_KEY',
+        'AGENT_GATEWAY_API_KEY',
+        'OMBRE_GATEWAY_TOKEN',
+        'AGENT_COORDINATOR_BASE_URL',
+        'AGENT_GATEWAY_BASE_URL',
+        'OMBRE_GATEWAY_BASE_URL',
+        'AGENT_COORDINATOR_AUTH_TYPE',
+        'AGENT_COORDINATOR_MODEL',
+        'AGENT_COORDINATOR_SESSION_ID',
+        'AGENT_COORDINATOR_MCP_TIMEOUT_MS',
+        'AGENT_COORDINATOR_TIMEOUT_MS',
+        'AGENT_COORDINATOR_AI_TIMEOUT_MS',
+        'AGENT_COORDINATOR_GEMINI_TIMEOUT_MS',
+        'AGENT_COORDINATOR_STREAM',
+        'AGENT_COORDINATOR_GEMINI_STREAM',
+        'AGENT_MAX_TOOL_ROUNDS',
+    ];
+    const previous = new Map(keys.map((key) => [key, process.env[key]]));
+    try {
+        for (const key of keys) delete process.env[key];
+        const config = buildCoordinatorConfig({});
+        assert.equal(config.baseUrl, '');
+        assert.equal(config.apiKey, '');
+        assert.equal(config.authType, 'bearer');
+        assert.equal(config.sessionId, 'relay-coordinator');
+        assert.equal(config.timeoutMs, 600_000);
+        assert.equal(config.geminiTimeoutMs, 0);
+        assert.equal(config.geminiStream, true);
+    } finally {
+        for (const [key, value] of previous) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+    }
 }
 
 function testCoordinatorMessageFormatting() {
@@ -619,6 +649,17 @@ async function testMissingCoordinatorConfigSkipsFinalModel() {
     const app = createApp();
     const originalFetch = globalThis.fetch;
     let finalCalls = 0;
+    const keys = [
+        'AGENT_COORDINATOR_API_KEY',
+        'AGENT_GATEWAY_API_KEY',
+        'OMBRE_GATEWAY_TOKEN',
+        'AGENT_COORDINATOR_BASE_URL',
+        'AGENT_GATEWAY_BASE_URL',
+        'OMBRE_GATEWAY_BASE_URL',
+        'AGENT_MCP_URL',
+        'OMBRE_MCP_URL',
+    ];
+    const previous = new Map(keys.map((key) => [key, process.env[key]]));
 
     globalThis.fetch = async (url) => {
         if (String(url).includes('api.openai.example')) {
@@ -634,6 +675,7 @@ async function testMissingCoordinatorConfigSkipsFinalModel() {
     };
 
     try {
+        for (const key of keys) delete process.env[key];
         const cases = [
             {
                 name: 'missing coordinator api key',
@@ -693,6 +735,10 @@ async function testMissingCoordinatorConfigSkipsFinalModel() {
 
         assert.equal(finalCalls, 0);
     } finally {
+        for (const [key, value] of previous) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
         globalThis.fetch = originalFetch;
     }
 }
@@ -803,11 +849,80 @@ async function testCoordinatorParsesNonStreamingNoRelevantInfo() {
             model: 'gemini-3.5-flash',
             fetchImpl: geminiFetch,
             timeoutMs: 1000,
+            geminiStream: false,
         });
 
         assert.equal(sawGenerateEndpoint, true);
         assert.equal(result.relevantInfo, '');
         assert.equal(result.debug.gemini_attempts[0].transport, 'generateContent');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testCoordinatorDefaultsToStreamingNoRelevantInfo() {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (body.method === 'initialize') {
+            return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+                status: 200,
+                headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
+            });
+        }
+        if (body.method === 'notifications/initialized') {
+            return new Response('', { status: 202 });
+        }
+        if (body.method === 'tools/list') {
+            return new Response(JSON.stringify({
+                jsonrpc: '2.0',
+                id: body.id,
+                result: {
+                    tools: [{
+                        name: 'breath',
+                        description: 'Read memory.',
+                        inputSchema: { type: 'object', properties: {} },
+                    }],
+                },
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        throw new Error(`unexpected MCP method ${body.method}`);
+    };
+
+    let sawStreamEndpoint = false;
+    const geminiFetch = async (url) => {
+        sawStreamEndpoint = /:streamGenerateContent(?:\?|$)/.test(String(url));
+        const body = {
+            candidates: [{
+                content: {
+                    role: 'model',
+                    parts: [{ text: 'NO_RELEVANT_INFO' }],
+                },
+            }],
+        };
+        return new Response(`data: ${JSON.stringify(body)}\n\n`, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+        });
+    };
+
+    try {
+        const result = await runOmbreCoordinator({
+            messages: [{ role: 'user', content: 'hello' }],
+            mcpServer: { url: 'https://brain.example.com/mcp', auth: { type: 'none' } },
+            apiKey: 'coordinator-key',
+            baseUrl: 'https://gateway.example.com/v1beta',
+            model: 'gemini-3.5-flash',
+            fetchImpl: geminiFetch,
+            timeoutMs: 1000,
+        });
+
+        assert.equal(sawStreamEndpoint, true);
+        assert.equal(result.relevantInfo, '');
+        assert.equal(result.debug.gemini_attempts[0].transport, 'streamGenerateContent');
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -932,6 +1047,7 @@ async function testCoordinatorToolLoopPreservesThoughtSignature() {
 
 await testAgentStreamUsesSeparateStopChunk();
 await testCoordinatorParsesNonStreamingNoRelevantInfo();
+await testCoordinatorDefaultsToStreamingNoRelevantInfo();
 await testCoordinatorToolLoopPreservesThoughtSignature();
 await testCoordinatorRetriesTransientGeminiFailures();
 await testCoordinatorFailureSkipsFinalModel();

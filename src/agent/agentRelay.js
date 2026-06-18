@@ -36,6 +36,12 @@ function envNumber(env, keys, fallback) {
     return Number.isFinite(value) ? value : fallback;
 }
 
+function envFlag(env, keys, fallback = false) {
+    const raw = envValue(env, keys, '');
+    if (!raw) return fallback;
+    return /^(1|true|yes|on)$/i.test(raw);
+}
+
 export function buildMcpServerConfig(env) {
     const url = envValue(env, ['AGENT_MCP_URL', 'OMBRE_MCP_URL'], '');
     if (!url) return null;
@@ -59,6 +65,7 @@ export function buildCoordinatorConfig(env) {
         sessionId: envValue(env, ['AGENT_COORDINATOR_SESSION_ID'], 'relay-coordinator'),
         timeoutMs: envNumber(env, ['AGENT_COORDINATOR_MCP_TIMEOUT_MS', 'AGENT_COORDINATOR_TIMEOUT_MS'], 600_000),
         geminiTimeoutMs: envNumber(env, ['AGENT_COORDINATOR_AI_TIMEOUT_MS', 'AGENT_COORDINATOR_GEMINI_TIMEOUT_MS'], 0),
+        geminiStream: envFlag(env, ['AGENT_COORDINATOR_STREAM', 'AGENT_COORDINATOR_GEMINI_STREAM'], true),
         maxToolRounds: Math.max(1, Math.min(32, envNumber(env, ['AGENT_MAX_TOOL_ROUNDS'], 8))),
     };
 }

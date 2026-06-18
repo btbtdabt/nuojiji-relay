@@ -7,7 +7,7 @@ const DEFAULT_COORDINATOR_BASE_URL = '';
 const DEFAULT_COORDINATOR_MODEL = 'gemini-3.5-flash';
 const DEFAULT_MCP_TIMEOUT_MS = 600_000;
 const DEFAULT_GEMINI_TIMEOUT_MS = 0;
-const DEFAULT_GEMINI_STREAM = false;
+const DEFAULT_GEMINI_STREAM = true;
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_GEMINI_RETRY_ATTEMPTS = 2;
 const RETRYABLE_GEMINI_STATUSES = new Set([429, 500, 502, 503, 504, 520, 522, 524]);
@@ -726,6 +726,7 @@ export async function runOmbreCoordinator({
     timeoutMs = DEFAULT_MCP_TIMEOUT_MS,
     mcpTimeoutMs = timeoutMs,
     geminiTimeoutMs = DEFAULT_GEMINI_TIMEOUT_MS,
+    geminiStream = DEFAULT_GEMINI_STREAM,
     maxToolRounds = DEFAULT_MAX_TOOL_ROUNDS,
     geminiRetryAttempts = DEFAULT_GEMINI_RETRY_ATTEMPTS,
     debugFull = false,
@@ -787,6 +788,7 @@ export async function runOmbreCoordinator({
                 contents,
                 functionDeclarations,
                 timeoutMs: geminiTimeoutMs,
+                stream: geminiStream,
                 retryAttempts: geminiRetryAttempts,
                 onAttempt: (attemptDebug) => {
                     debug.gemini_attempts.push({ round: round + 1, ...attemptDebug });

@@ -11,6 +11,7 @@ RELAY_SECRET=
 # 这些通常在部署后到 Cloudflare Worker → Variables and Secrets 手动添加。
 # AGENT_COORDINATOR_API_KEY=
 # AGENT_COORDINATOR_MODEL=gemini-3.5-flash
+# AGENT_COORDINATOR_STREAM=1
 # AGENT_MCP_URL=https://brain.example.com/mcp
 # AGENT_MCP_BEARER_TOKEN=
 # AGENT_FINAL_API_URL=https://claude-proxy.example.workers.dev
