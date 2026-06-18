@@ -37,6 +37,7 @@ import {
 export const PROACTIVE_USER_REPLY_GRACE_MS = 60 * 1000;
 const PROACTIVE_IMAGE_SCHEMA =
     '{"t":"image","sub":"selfie|scene","d":"[SUBJECT:XXX] EN desc","loc":"地点","time":"时间"}photo—sub:selfie=char in photo(selfie/mirror), scene=char NOT in photo(food/scenery/pet); d MUST be English NovelAI/SDXL tag prompt; d MUST start with [SUBJECT:PERSON_EMOTION] or [SUBJECT:PERSON_ACTION] or [SUBJECT:SCENE]; no Chinese prose inside d; selfie→pose/expression/outfit+environment/background, scene→subject+environment';
+const COORDINATOR_ERROR_PREFIX = '【coordinator报错】';
 
 // 把滑窗消息渲染成转录文本（喂进 promptTemplate 的 {{RECENT_MESSAGES}}）
 function renderTranscript(recentMessages) {
@@ -62,6 +63,10 @@ function buildProactiveCurrentQuery({ transcript, reason }) {
         reason ? `Trigger reason: ${reason}` : '',
         transcript ? `Recent transcript:\n${transcript}` : '',
     ].filter(Boolean).join('\n');
+}
+
+function isCoordinatorErrorReply(content) {
+    return String(content || '').includes(COORDINATOR_ERROR_PREFIX);
 }
 
 export function upgradeProactiveImageSchema(systemContent) {
@@ -340,6 +345,9 @@ export async function runProactiveTick(env) {
             const outputCommitments = !error
                 ? parseCommitmentsFromContent(content, { now, utcOffsetSeconds })
                 : [];
+            if (!error && isCoordinatorErrorReply(content)) {
+                error = `${COORDINATOR_ERROR_PREFIX} ${String(content || '').slice(0, 300)}`;
+            }
 
             // 生成失败：设「短冷却」而非回退到原值或占满完整主动冷却。
             //    把 lastFiredAt 设成 now-(fullCooldown-failCooldown) → 冷却闸只剩失败短冷却。

@@ -338,17 +338,18 @@ async function testTickUsesInternalAgentRelayForSelfApiUrl() {
         });
         assert.equal(registerRes.status, 200);
 
-        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
         assert.deepEqual(fetchUrls, []);
 
         const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
-        assert.equal(outbox.items.length, 1);
-        assert.match(outbox.items[0].content, /coordinator报错/);
+        assert.equal(outbox.items.length, 0);
 
         const events = listDebugEvents(kv);
         const generationEvent = events.find((event) => event.type === 'proactive_generation');
         assert.equal(generationEvent.stage, 'complete');
-        assert.equal(generationEvent.generated, true);
+        assert.equal(generationEvent.generated, false);
+        assert.equal(generationEvent.outbox, false);
+        assert.match(generationEvent.error.message, /coordinator报错/);
         assert.equal(generationEvent.internalAgentRelay, true);
     } finally {
         Date.now = originalNow;
