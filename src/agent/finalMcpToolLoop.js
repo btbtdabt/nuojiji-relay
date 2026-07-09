@@ -68,7 +68,14 @@ function prepareAnthropicTools(mcpTools) {
     const used = new Set();
     const nameMap = new Map();
     const tools = [];
-    for (const tool of Array.isArray(mcpTools) ? mcpTools : []) {
+    const sortedTools = (Array.isArray(mcpTools) ? [...mcpTools] : []).sort((left, right) => {
+        const leftName = String(left?.name || '').trim();
+        const rightName = String(right?.name || '').trim();
+        if (leftName < rightName) return -1;
+        if (leftName > rightName) return 1;
+        return 0;
+    });
+    for (const tool of sortedTools) {
         const originalName = String(tool?.name || '').trim();
         if (!originalName) continue;
         const name = makeAnthropicToolName(originalName, used);
