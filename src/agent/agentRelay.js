@@ -1,6 +1,5 @@
 import { runGeneration } from '../ai/aiCaller.js';
 import { runAnthropicFinalWithMcpTools, supportsFinalMcpToolLoop } from './finalMcpToolLoop.js';
-import { NO_RELEVANT_INFO } from './ombreCoordinatorPrompt.js';
 import {
     clipDebugValue,
     debugError,
@@ -11,7 +10,6 @@ import {
     summarizeMessages,
 } from './agentDebug.js';
 
-const RELEVANT_INFO_HEADER = '[Relevant info that could help as context]';
 function envValue(env, keys, fallback = '') {
     for (const key of keys) {
         const value = env?.[key] ?? (typeof process !== 'undefined' ? process.env?.[key] : undefined);
@@ -27,12 +25,6 @@ function envNumber(env, keys, fallback) {
     return Number.isFinite(value) ? value : fallback;
 }
 
-function envFlag(env, keys, fallback = false) {
-    const raw = envValue(env, keys, '');
-    if (!raw) return fallback;
-    return /^(1|true|yes|on)$/i.test(raw);
-}
-
 export function buildMcpServerConfig(env) {
     const url = envValue(env, ['AGENT_MCP_URL', 'OMBRE_MCP_URL'], '');
     if (!url) return null;
@@ -45,20 +37,6 @@ export function buildMcpServerConfig(env) {
     if (headerName && headerValue) return { url, auth: { type: 'header', headerName, value: headerValue } };
 
     return { url, auth: { type: 'none' } };
-}
-
-export function buildCoordinatorConfig(env) {
-    return {
-        apiKey: envValue(env, ['AGENT_COORDINATOR_API_KEY', 'AGENT_GATEWAY_API_KEY', 'OMBRE_GATEWAY_TOKEN'], ''),
-        baseUrl: envValue(env, ['AGENT_COORDINATOR_BASE_URL', 'AGENT_GATEWAY_BASE_URL', 'OMBRE_GATEWAY_BASE_URL'], ''),
-        authType: envValue(env, ['AGENT_COORDINATOR_AUTH_TYPE'], 'bearer'),
-        model: envValue(env, ['AGENT_COORDINATOR_MODEL'], 'gemini-3.5-flash'),
-        sessionId: envValue(env, ['AGENT_COORDINATOR_SESSION_ID'], 'relay-coordinator'),
-        timeoutMs: envNumber(env, ['AGENT_COORDINATOR_MCP_TIMEOUT_MS', 'AGENT_COORDINATOR_TIMEOUT_MS'], 600_000),
-        geminiTimeoutMs: envNumber(env, ['AGENT_COORDINATOR_AI_TIMEOUT_MS', 'AGENT_COORDINATOR_GEMINI_TIMEOUT_MS'], 0),
-        geminiStream: envFlag(env, ['AGENT_COORDINATOR_STREAM', 'AGENT_COORDINATOR_GEMINI_STREAM'], true),
-        maxToolRounds: Math.max(1, Math.min(32, envNumber(env, ['AGENT_MAX_TOOL_ROUNDS'], 8))),
-    };
 }
 
 function contentPartToText(part) {
@@ -145,18 +123,6 @@ export function buildFinalSettings(env, body = {}) {
         maxRetries: typeof body.max_retries === 'number' ? body.max_retries : 1,
         secondaryFallbackEnabled: false,
     };
-}
-
-export function appendRelevantInfoMessage(messages, relevantInfo) {
-    const text = String(relevantInfo || '').trim();
-    if (!text || text === NO_RELEVANT_INFO) return Array.isArray(messages) ? messages : [];
-    return [
-        ...(Array.isArray(messages) ? messages : []),
-        {
-            role: 'system',
-            content: `${RELEVANT_INFO_HEADER}\n${text}`,
-        },
-    ];
 }
 
 function makeCompletionId() {
