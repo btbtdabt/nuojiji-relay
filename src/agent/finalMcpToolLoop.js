@@ -8,6 +8,7 @@ import {
 } from '../ai/requestBuilder.js';
 import { createMcpSession, mcpContentToText } from '../mcp/mcpClient.js';
 import { clipDebugValue } from './agentDebug.js';
+import { isOmbreMcpServerUrl, withOmbreMcpPolicySystem } from './ombreMcpPolicy.js';
 
 const DEFAULT_MCP_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
@@ -356,6 +357,8 @@ export async function runAnthropicFinalWithMcpTools({
         stream: true,
         maxTokens,
     });
+    initialBody.system = withOmbreMcpPolicySystem(initialBody.system, mcpServer);
+    debug.ombre_policy_injected = isOmbreMcpServerUrl(mcpServer?.url);
     const workingMessages = Array.isArray(initialBody.messages) ? cloneJson(initialBody.messages) : [];
 
     for (let round = 0; round <= maxToolRounds; round++) {
