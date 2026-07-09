@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { API_CONFIGS, API_TYPES } from '../src/ai/apiConfigs.js';
 import { runGeneration } from '../src/ai/aiCaller.js';
-import { buildChatRequestBody } from '../src/ai/requestBuilder.js';
+import { buildApiHeaders, buildChatEndpoint, buildChatRequestBody } from '../src/ai/requestBuilder.js';
 
 function testGeminiNonStreamJoinsAllTextParts() {
     const content = API_CONFIGS[API_TYPES.GEMINI].extractContent({
@@ -144,6 +144,80 @@ async function testRunGenerationHasNoLocalAbortSignalByDefault() {
     }
 }
 
+async function testClaudeApiTypeUsesAnthropicMessagesAgainstGateway() {
+    const endpoint = buildChatEndpoint('https://gateway.example.com/v1', 'claude');
+    assert.equal(endpoint, 'https://gateway.example.com/v1/messages');
+    const headers = buildApiHeaders('https://gateway.example.com/v1', 'gateway-token', {}, 'claude');
+    assert.equal(headers['x-api-key'], 'gateway-token');
+    assert.equal(headers.Authorization, undefined);
+    assert.equal(headers['anthropic-version'], '2023-06-01');
+
+    const body = buildChatRequestBody({
+        apiUrl: 'https://gateway.example.com/v1',
+        apiType: 'claude',
+        model: 'claude-opus-4-8-native',
+        messages: [
+            { role: 'system', content: 'system prompt' },
+            { role: 'user', content: 'hi' },
+        ],
+        stream: true,
+        maxTokens: 128,
+    });
+    assert.equal(body.model, 'claude-opus-4-8-native');
+    assert.equal(body.system, 'system prompt');
+    assert.deepEqual(body.messages, [{ role: 'user', content: 'hi' }]);
+    assert.equal(body.max_tokens, 128);
+    assert.equal(body.stream, true);
+
+    const originalFetch = globalThis.fetch;
+    let captured = null;
+    globalThis.fetch = async (url, init) => {
+        captured = {
+            url: String(url),
+            headers: init?.headers || {},
+            body: JSON.parse(String(init?.body || '{}')),
+        };
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+            start(controller) {
+                controller.enqueue(encoder.encode('event: message_start\n'));
+                controller.enqueue(encoder.encode('data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[]}}\n\n'));
+                controller.enqueue(encoder.encode('event: content_block_delta\n'));
+                controller.enqueue(encoder.encode('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello native"}}\n\n'));
+                controller.enqueue(encoder.encode('event: message_stop\n'));
+                controller.enqueue(encoder.encode('data: {"type":"message_stop"}\n\n'));
+                controller.close();
+            },
+        });
+        return new Response(stream, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+        });
+    };
+
+    try {
+        const content = await runGeneration({
+            mainApiUrl: 'https://gateway.example.com/v1',
+            mainApiKey: 'gateway-token',
+            mainApiModel: 'claude-opus-4-8-native',
+            apiType: 'claude',
+            currentQuery: 'hi',
+            autoRetryEnabled: false,
+            secondaryFallbackEnabled: false,
+        }, [{ role: 'user', content: 'hi' }]);
+
+        assert.equal(content, 'hello native');
+        assert.equal(captured.url, 'https://gateway.example.com/v1/messages');
+        assert.equal(captured.headers['x-api-key'], 'gateway-token');
+        assert.equal(captured.headers.Authorization, undefined);
+        assert.equal(captured.body.model, 'claude-opus-4-8-native');
+        assert.deepEqual(captured.body.messages, [{ role: 'user', content: 'hi' }]);
+        assert.equal(captured.body.stream, true);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 function testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText() {
     const messages = [{ role: 'system', content: 'Generate one proactive message.' }];
     const body = buildChatRequestBody({
@@ -164,5 +238,6 @@ testClaudeNonStreamJoinsAllTextBlocks();
 await testSseFinalDataLineWithoutTrailingNewlineIsParsed();
 await testRunGenerationAddsCurrentQueryHeaderWithoutChangingMessages();
 await testRunGenerationHasNoLocalAbortSignalByDefault();
+await testClaudeApiTypeUsesAnthropicMessagesAgainstGateway();
 testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText();
 console.log('aiParsing tests passed');

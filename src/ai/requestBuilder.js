@@ -13,6 +13,10 @@ export function isAnthropicOfficialUrl(apiUrl) {
     return /(^|\.)anthropic\.com/i.test(apiUrl);
 }
 
+export function isAnthropicRequest(apiUrl, apiType = '') {
+    return String(apiType || '').toLowerCase() === 'claude' || isAnthropicOfficialUrl(apiUrl);
+}
+
 function buildApiEndpoint(apiUrl, suffix) {
     if (!apiUrl) return '';
     let base = apiUrl.replace(/\/+$/, '');
@@ -34,11 +38,11 @@ function buildApiEndpoint(apiUrl, suffix) {
     return `${base}/v1${suffix}`;
 }
 
-export const buildChatEndpoint = (apiUrl) =>
-    buildApiEndpoint(apiUrl, isAnthropicOfficialUrl(apiUrl) ? '/messages' : '/chat/completions');
+export const buildChatEndpoint = (apiUrl, apiType = '') =>
+    buildApiEndpoint(apiUrl, isAnthropicRequest(apiUrl, apiType) ? '/messages' : '/chat/completions');
 
-export function buildApiHeaders(apiUrl, apiKey, extraHeaders = {}) {
-    if (isAnthropicOfficialUrl(apiUrl)) {
+export function buildApiHeaders(apiUrl, apiKey, extraHeaders = {}, apiType = '') {
+    if (isAnthropicRequest(apiUrl, apiType)) {
         return {
             'Content-Type': 'application/json',
             'x-api-key': apiKey,
@@ -129,8 +133,8 @@ function normalizeMessagesForAnthropic(messages) {
     return { messages: converted, system: systemParts.join('\n\n').trim() };
 }
 
-export function buildChatRequestBody({ apiUrl, model, messages, temperature, reasoningEffort, stream, maxTokens }) {
-    const isAnthropic = isAnthropicOfficialUrl(apiUrl);
+export function buildChatRequestBody({ apiUrl, apiType, model, messages, temperature, reasoningEffort, stream, maxTokens }) {
+    const isAnthropic = isAnthropicRequest(apiUrl, apiType);
     if (isAnthropic) {
         const { messages: anthropicMessages, system } = normalizeMessagesForAnthropic(messages);
         const anthropicLimit = /claude-3-5|claude-3\.5/i.test(model) ? 8192

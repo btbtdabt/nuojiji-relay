@@ -18,6 +18,7 @@ RELAY_SECRET=
 # AGENT_FINAL_API_KEY=
 # AGENT_FINAL_MODEL=claude-opus-4-8
 # AGENT_FINAL_API_TYPE=openai
+# Ombre Gateway native Anthropic path: AGENT_FINAL_API_URL=https://gateway.example.com/v1, AGENT_FINAL_MODEL=claude-opus-4-8-native, AGENT_FINAL_API_TYPE=claude
 # AGENT_DEBUG_FULL_PROMPT=1
 # AGENT_DEBUG_FULL_LIMIT_CHARS=200000
 

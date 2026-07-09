@@ -30,16 +30,16 @@ function withCurrentQueryHeader(headers, currentQuery) {
 
 async function callOnce({ apiUrl, apiKey, model, apiType, messages, temperature, reasoningEffort, maxTokens, extraHeaders, currentQuery, requestTimeoutMs }) {
     assertSafeApiUrl(apiUrl);
-    const endpoint = buildChatEndpoint(apiUrl);
+    const endpoint = buildChatEndpoint(apiUrl, apiType);
     const headers = withCurrentQueryHeader(
-        buildApiHeaders(apiUrl, apiKey, extraHeaders),
+        buildApiHeaders(apiUrl, apiKey, extraHeaders, apiType),
         currentQuery
     );
     // ⚠️ 用流式调 AI（stream:true）：部分 AI 代理（如 gemini 反代）对「非流式 + 图片」会 500，
     //    流式正常。后端在请求内读完整个 SSE 流、把 delta 拼成完整 content 再返回 —— 对手机端
     //    仍是「整条结果进 outbox」的非流式交付，只是后端内部走流式绕开代理的非流式限制。
     const body = buildChatRequestBody({
-        apiUrl, model, messages, temperature, reasoningEffort, stream: true, maxTokens,
+        apiUrl, apiType, model, messages, temperature, reasoningEffort, stream: true, maxTokens,
     });
 
     const timeoutMs = normalizeTimeoutMs(requestTimeoutMs);

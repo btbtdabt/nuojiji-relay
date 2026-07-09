@@ -451,6 +451,115 @@ async function testAgentStreamUsesSeparateStopChunk() {
     }
 }
 
+async function testAgentFinalCanUseAnthropicMessagesGatewayRoute() {
+    const app = createApp();
+    const env = {
+        OUTBOX: new FakeKv(),
+        RELAY_SECRET: 'test-secret',
+        AGENT_MCP_URL: 'https://brain.example.com/mcp',
+        AGENT_COORDINATOR_API_KEY: 'coordinator-key',
+        AGENT_COORDINATOR_BASE_URL: 'https://gateway.example.com/v1beta',
+        AGENT_COORDINATOR_MODEL: 'gemini-3.5-flash',
+        AGENT_FINAL_API_URL: 'https://gateway.example.com/v1',
+        AGENT_FINAL_API_KEY: 'gateway-token',
+        AGENT_FINAL_MODEL: 'claude-opus-4-8-native',
+        AGENT_FINAL_API_TYPE: 'claude',
+        AGENT_FINAL_OMBRE_SESSION_ID: 'main',
+    };
+    const originalFetch = globalThis.fetch;
+    const finalRequests = [];
+
+    globalThis.fetch = async (url, init) => {
+        const textUrl = String(url);
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (textUrl.includes('brain.example.com')) {
+            if (body.method === 'initialize') {
+                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
+                });
+            }
+            if (body.method === 'notifications/initialized') {
+                return new Response('', { status: 202 });
+            }
+            if (body.method === 'tools/list') {
+                return new Response(JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: body.id,
+                    result: {
+                        tools: [{
+                            name: 'breath',
+                            description: 'Read memory.',
+                            inputSchema: { type: 'object', properties: {} },
+                        }],
+                    },
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+        }
+        if (textUrl.includes('/v1beta/')) {
+            return new Response(JSON.stringify({
+                candidates: [{
+                    content: {
+                        role: 'model',
+                        parts: [{ text: 'NO_RELEVANT_INFO' }],
+                    },
+                }],
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        if (textUrl === 'https://gateway.example.com/v1/messages') {
+            finalRequests.push({ url: textUrl, headers: init?.headers || {}, body });
+            const encoder = new TextEncoder();
+            const stream = new ReadableStream({
+                start(controller) {
+                    controller.enqueue(encoder.encode('event: content_block_delta\n'));
+                    controller.enqueue(encoder.encode('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"native hello"}}\n\n'));
+                    controller.enqueue(encoder.encode('event: message_stop\n'));
+                    controller.enqueue(encoder.encode('data: {"type":"message_stop"}\n\n'));
+                    controller.close();
+                },
+            });
+            return new Response(stream, {
+                status: 200,
+                headers: { 'content-type': 'text/event-stream' },
+            });
+        }
+        throw new Error(`unexpected fetch ${textUrl}`);
+    };
+
+    try {
+        const res = await app.fetch(new Request('https://relay.example/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer test-secret',
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                messages: [{ role: 'user', content: 'hi' }],
+            }),
+        }), env);
+
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.equal(data.choices?.[0]?.message?.content, 'native hello');
+        assert.equal(finalRequests.length, 1);
+        assert.equal(finalRequests[0].headers['x-api-key'], 'gateway-token');
+        assert.equal(finalRequests[0].headers.Authorization, undefined);
+        assert.equal(finalRequests[0].headers['anthropic-version'], '2023-06-01');
+        assert.equal(finalRequests[0].headers['X-Ombre-Session-Id'], 'main');
+        assert.equal(finalRequests[0].body.model, 'claude-opus-4-8-native');
+        assert.deepEqual(finalRequests[0].body.messages, [{ role: 'user', content: 'hi' }]);
+        assert.equal(finalRequests[0].body.stream, true);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
 async function testCoordinatorRetriesTransientGeminiFailures() {
     const originalFetch = globalThis.fetch;
     let geminiCalls = 0;
@@ -1046,6 +1155,7 @@ async function testCoordinatorToolLoopPreservesThoughtSignature() {
 }
 
 await testAgentStreamUsesSeparateStopChunk();
+await testAgentFinalCanUseAnthropicMessagesGatewayRoute();
 await testCoordinatorParsesNonStreamingNoRelevantInfo();
 await testCoordinatorDefaultsToStreamingNoRelevantInfo();
 await testCoordinatorToolLoopPreservesThoughtSignature();
