@@ -9,16 +9,15 @@ RELAY_SECRET=
 
 # 可选：启用 /v1/chat/completions Agent Relay。
 # 这些通常在部署后到 Cloudflare Worker → Variables and Secrets 手动添加。
-# AGENT_COORDINATOR_API_KEY=
-# AGENT_COORDINATOR_MODEL=gemini-3.5-flash
-# AGENT_COORDINATOR_STREAM=1
+# native Claude final route can call MCP tools directly; no coordinator route is required.
 # AGENT_MCP_URL=https://brain.example.com/mcp
 # AGENT_MCP_BEARER_TOKEN=
-# AGENT_FINAL_API_URL=https://claude-proxy.example.workers.dev
+# AGENT_FINAL_API_URL=https://gateway.example.com/v1
 # AGENT_FINAL_API_KEY=
-# AGENT_FINAL_MODEL=claude-opus-4-8
-# AGENT_FINAL_API_TYPE=openai
-# Ombre Gateway native Anthropic path: AGENT_FINAL_API_URL=https://gateway.example.com/v1, AGENT_FINAL_MODEL=claude-opus-4-8-native, AGENT_FINAL_API_TYPE=claude
+# AGENT_FINAL_MODEL=claude-opus-4-8-native
+# AGENT_FINAL_API_TYPE=claude
+# AGENT_FINAL_MAX_TOOL_ROUNDS=8
+# AGENT_FINAL_MCP_TIMEOUT_MS=600000
 # AGENT_DEBUG_FULL_PROMPT=1
 # AGENT_DEBUG_FULL_LIMIT_CHARS=200000
 

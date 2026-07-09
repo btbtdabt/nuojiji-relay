@@ -33,6 +33,9 @@ const env = (kv) => ({
     OUTBOX: kv,
     RELAY_SECRET: 'test-secret',
     RELAY_DELIVERY_DEBUG: '1',
+    AGENT_FINAL_API_URL: 'https://api.openai.example',
+    AGENT_FINAL_API_KEY: 'final-key',
+    AGENT_FINAL_MODEL: 'test-model',
 });
 
 function authHeaders() {
@@ -269,6 +272,14 @@ async function testGenerateUsesInternalAgentRelayForSelfApiUrl() {
         if (String(url).startsWith('https://relay.example/')) {
             throw new Error('self fetch should not happen');
         }
+        if (String(url).startsWith('https://api.openai.example/')) {
+            return new Response(JSON.stringify({
+                choices: [{ message: { content: '{"t":"text","c":"internal ok"}' } }],
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
         throw new Error(`unexpected external fetch: ${url}`);
     };
 
@@ -292,10 +303,10 @@ async function testGenerateUsesInternalAgentRelayForSelfApiUrl() {
         assert.equal(listed.items.length, 1);
         assert.equal(listed.items[0].requestId, 'req-self-relay');
         assert.equal(listed.items[0].error, null);
-        assert.match(listed.items[0].content, /coordinator报错/);
+        assert.match(listed.items[0].content, /internal ok/);
 
         const events = await debugEvents(kv);
-        assert.ok(events.find((event) => event.type === 'agent_chat' && event.stage === 'coordinator'));
+        assert.ok(events.find((event) => event.type === 'agent_chat' && event.stage === 'complete'));
         assert.ok(events.find((event) => event.type === 'relay_generate'
             && event.stage === 'complete'
             && event.generated === true

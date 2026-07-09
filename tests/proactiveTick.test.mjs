@@ -288,7 +288,13 @@ async function testTickPersistsGeneratedBubbleForNextContextAfterStaleSync() {
 async function testTickUsesInternalAgentRelayForSelfApiUrl() {
     const app = createApp();
     const kv = new FakeKv();
-    const env = { OUTBOX: kv, RELAY_SECRET: 'test-secret' };
+    const env = {
+        OUTBOX: kv,
+        RELAY_SECRET: 'test-secret',
+        AGENT_FINAL_API_URL: 'https://api.openai.example',
+        AGENT_FINAL_API_KEY: 'final-key',
+        AGENT_FINAL_MODEL: 'test-model',
+    };
     const originalNow = Date.now;
     const originalRandom = Math.random;
     const originalFetch = globalThis.fetch;
@@ -301,6 +307,14 @@ async function testTickUsesInternalAgentRelayForSelfApiUrl() {
         fetchUrls.push(String(url));
         if (String(url).startsWith('https://relay.example/v1')) {
             throw new Error('self fetch should not happen');
+        }
+        if (String(url).startsWith('https://api.openai.example/')) {
+            return new Response(JSON.stringify({
+                choices: [{ message: { content: JSON.stringify({ t: 'text', c: 'internal proactive ok' }) } }],
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
         }
         throw new Error(`unexpected fetch: ${url}`);
     };
@@ -338,18 +352,19 @@ async function testTickUsesInternalAgentRelayForSelfApiUrl() {
         });
         assert.equal(registerRes.status, 200);
 
-        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 0 });
-        assert.deepEqual(fetchUrls, []);
+        assertTickResult(await runProactiveTick(env), { pairs: 1, fired: 1 });
+        assert.deepEqual(fetchUrls, ['https://api.openai.example/v1/chat/completions']);
 
         const outbox = await getJson(app, env, '/outbox?inboxId=inbox');
-        assert.equal(outbox.items.length, 0);
+        assert.equal(outbox.items.length, 1);
+        assert.match(outbox.items[0].content, /internal proactive ok/);
 
         const events = listDebugEvents(kv);
         const generationEvent = events.find((event) => event.type === 'proactive_generation');
         assert.equal(generationEvent.stage, 'complete');
-        assert.equal(generationEvent.generated, false);
-        assert.equal(generationEvent.outbox, false);
-        assert.match(generationEvent.error.message, /coordinator报错/);
+        assert.equal(generationEvent.generated, true);
+        assert.equal(generationEvent.outbox, true);
+        assert.equal(generationEvent.error, null);
         assert.equal(generationEvent.internalAgentRelay, true);
     } finally {
         Date.now = originalNow;

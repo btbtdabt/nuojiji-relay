@@ -439,13 +439,11 @@ async function testAgentStreamUsesSeparateStopChunk() {
         const events = await listAgentEvents(env, { limit: 5 });
         const chatEvent = events.find((event) => event.type === 'agent_chat');
         assert.equal(chatEvent.stage, 'complete');
-        assert.ok(chatEvent.timings.coordinator_ms >= 0);
         assert.ok(chatEvent.timings.final_ms >= 0);
         assert.ok(chatEvent.timings.total_ms >= 0);
-        assert.ok(chatEvent.coordinator.timings.mcp_session_ms >= 0);
-        assert.ok(chatEvent.coordinator.timings.mcp_list_tools_ms >= 0);
-        assert.ok(chatEvent.coordinator.timings.total_ms >= 0);
-        assert.ok(chatEvent.coordinator.gemini_attempts[0].duration_ms >= 0);
+        assert.equal(chatEvent.final.toolLoop, false);
+        assert.equal(chatEvent.final_mcp.enabled, false);
+        assert.equal(chatEvent.final_mcp.skipped, 'final api is not Anthropic native');
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -555,6 +553,153 @@ async function testAgentFinalCanUseAnthropicMessagesGatewayRoute() {
         assert.equal(finalRequests[0].body.model, 'claude-opus-4-8-native');
         assert.deepEqual(finalRequests[0].body.messages, [{ role: 'user', content: 'hi' }]);
         assert.equal(finalRequests[0].body.stream, true);
+        assert.equal(finalRequests[0].body.tools[0].name, 'breath');
+
+        const events = await listAgentEvents(env, { limit: 5 });
+        const chatEvent = events.find((event) => event.type === 'agent_chat');
+        assert.equal(chatEvent.stage, 'complete');
+        assert.equal(chatEvent.final.toolLoop, true);
+        assert.equal(chatEvent.final_mcp.tool_count, 1);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testAgentFinalAnthropicCanRunMcpToolLoop() {
+    const app = createApp();
+    const env = {
+        OUTBOX: new FakeKv(),
+        RELAY_SECRET: 'test-secret',
+        AGENT_MCP_URL: 'https://brain.example.com/mcp',
+        AGENT_FINAL_API_URL: 'https://gateway.example.com/v1',
+        AGENT_FINAL_API_KEY: 'gateway-token',
+        AGENT_FINAL_MODEL: 'claude-opus-4-8-native',
+        AGENT_FINAL_API_TYPE: 'claude',
+        AGENT_FINAL_OMBRE_SESSION_ID: 'main',
+    };
+    const originalFetch = globalThis.fetch;
+    const finalRequests = [];
+    const mcpCalls = [];
+
+    globalThis.fetch = async (url, init) => {
+        const textUrl = String(url);
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (textUrl.includes('brain.example.com')) {
+            if (body.method === 'initialize') {
+                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
+                });
+            }
+            if (body.method === 'notifications/initialized') {
+                return new Response('', { status: 202 });
+            }
+            if (body.method === 'tools/list') {
+                return new Response(JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: body.id,
+                    result: {
+                        tools: [{
+                            name: 'breath',
+                            description: 'Read memory.',
+                            inputSchema: {
+                                type: 'object',
+                                properties: { query: { type: 'string' } },
+                            },
+                        }],
+                    },
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+            if (body.method === 'tools/call') {
+                mcpCalls.push(body.params);
+                return new Response(JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: body.id,
+                    result: {
+                        content: [{ type: 'text', text: '艾米喜欢海鲜，但不喜欢海鲜市场气味。' }],
+                        isError: false,
+                    },
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+        }
+        if (textUrl === 'https://gateway.example.com/v1/messages') {
+            finalRequests.push({ url: textUrl, headers: init?.headers || {}, body });
+            if (finalRequests.length === 1) {
+                return new Response(JSON.stringify({
+                    id: 'msg_tool',
+                    type: 'message',
+                    role: 'assistant',
+                    model: 'claude-opus-4-8-native',
+                    content: [{
+                        type: 'tool_use',
+                        id: 'toolu_1',
+                        name: 'breath',
+                        input: { query: '海鲜' },
+                    }],
+                    stop_reason: 'tool_use',
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+            assert.equal(finalRequests[1].body.messages[1].role, 'assistant');
+            assert.equal(finalRequests[1].body.messages[1].content[0].type, 'tool_use');
+            assert.equal(finalRequests[1].body.messages[2].role, 'user');
+            assert.equal(finalRequests[1].body.messages[2].content[0].type, 'tool_result');
+            assert.match(finalRequests[1].body.messages[2].content[0].content, /艾米喜欢海鲜/);
+            return new Response(JSON.stringify({
+                id: 'msg_final',
+                type: 'message',
+                role: 'assistant',
+                model: 'claude-opus-4-8-native',
+                content: [{ type: 'text', text: '记得，你喜欢海鲜，但不喜欢那个市场味。' }],
+                stop_reason: 'end_turn',
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        throw new Error(`unexpected fetch ${textUrl}`);
+    };
+
+    try {
+        const res = await app.fetch(new Request('https://relay.example/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer test-secret',
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                messages: [{ role: 'user', content: '我喜欢吃什么' }],
+            }),
+        }), env);
+
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.equal(data.choices?.[0]?.message?.content, '记得，你喜欢海鲜，但不喜欢那个市场味。');
+        assert.equal(finalRequests.length, 2);
+        assert.equal(mcpCalls.length, 1);
+        assert.equal(mcpCalls[0].name, 'breath');
+        assert.deepEqual(mcpCalls[0].arguments, { query: '海鲜' });
+        assert.equal(finalRequests[0].headers['X-Ombre-Session-Id'], 'main');
+        assert.equal(
+            Buffer.from(finalRequests[0].headers['X-Ombre-Current-Query-B64'] || '', 'base64').toString('utf8'),
+            '我喜欢吃什么'
+        );
+
+        const events = await listAgentEvents(env, { limit: 5 });
+        const chatEvent = events.find((event) => event.type === 'agent_chat');
+        assert.equal(chatEvent.stage, 'complete');
+        assert.equal(chatEvent.final.toolLoop, true);
+        assert.equal(chatEvent.final.toolCallCount, 1);
+        assert.equal(chatEvent.final_mcp.calls[0].name, 'breath');
+        assert.equal(chatEvent.final_mcp.calls[0].ok, true);
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -646,13 +791,12 @@ async function testCoordinatorRetriesTransientGeminiFailures() {
     }
 }
 
-async function testCoordinatorFailureSkipsFinalModel() {
+async function testCoordinatorConfigIsIgnoredByAgentRoute() {
     const app = createApp();
     const env = {
         OUTBOX: new FakeKv(),
         RELAY_SECRET: 'test-secret',
-        AGENT_MCP_URL: 'https://brain.example.com/mcp',
-        AGENT_COORDINATOR_API_KEY: 'coordinator-key',
+        AGENT_COORDINATOR_API_KEY: 'bad-coordinator-key',
         AGENT_COORDINATOR_BASE_URL: 'https://gateway.example.com/v1beta',
         AGENT_COORDINATOR_MODEL: 'gemini-3.5-flash',
         AGENT_FINAL_API_URL: 'https://api.openai.example',
@@ -661,51 +805,16 @@ async function testCoordinatorFailureSkipsFinalModel() {
     };
     const originalFetch = globalThis.fetch;
     let finalCalls = 0;
-    let geminiCalls = 0;
 
     globalThis.fetch = async (url, init) => {
         const textUrl = String(url);
-        if (textUrl.includes('brain.example.com')) {
-            const body = JSON.parse(String(init?.body || '{}'));
-            if (body.method === 'initialize') {
-                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
-                    status: 200,
-                    headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
-                });
-            }
-            if (body.method === 'notifications/initialized') {
-                return new Response('', { status: 202 });
-            }
-            if (body.method === 'tools/list') {
-                return new Response(JSON.stringify({
-                    jsonrpc: '2.0',
-                    id: body.id,
-                    result: {
-                        tools: [{
-                            name: 'breath',
-                            description: 'Read memory.',
-                            inputSchema: { type: 'object', properties: {} },
-                        }],
-                    },
-                }), {
-                    status: 200,
-                    headers: { 'content-type': 'application/json' },
-                });
-            }
-        }
         if (textUrl.includes('gateway.example.com')) {
-            geminiCalls++;
-            return new Response(JSON.stringify({
-                error: { code: 524, message: 'gateway timeout', status: 'DEADLINE_EXCEEDED' },
-            }), {
-                status: 524,
-                headers: { 'content-type': 'application/json' },
-            });
+            throw new Error('coordinator route should not be called');
         }
         if (textUrl.includes('api.openai.example')) {
             finalCalls++;
             return new Response(JSON.stringify({
-                choices: [{ message: { content: 'should not happen' } }],
+                choices: [{ message: { content: 'final still runs' } }],
             }), {
                 status: 200,
                 headers: { 'content-type': 'application/json' },
@@ -729,32 +838,20 @@ async function testCoordinatorFailureSkipsFinalModel() {
         assert.equal(res.status, 200);
         const data = await res.json();
         const content = data.choices?.[0]?.message?.content || '';
-        assert.match(content, /coordinator报错/);
-        assert.match(content, /524/);
-        assert.equal(geminiCalls, 3);
-        assert.equal(finalCalls, 0);
+        assert.equal(content, 'final still runs');
+        assert.equal(finalCalls, 1);
 
         const events = await listAgentEvents(env, { limit: 3 });
-        assert.equal(events[0].stage, 'coordinator');
-        assert.equal(events[0].ok, false);
-        assert.equal(events[0].final.skipped, true);
-        assert.deepEqual(events[0].coordinator.gemini_attempts.map((item) => ({
-            round: item.round,
-            attempt: item.attempt,
-            ok: item.ok,
-            status: item.status,
-            retryable: item.retryable,
-        })), [
-            { round: 1, attempt: 1, ok: false, status: 524, retryable: true },
-            { round: 1, attempt: 2, ok: false, status: 524, retryable: true },
-            { round: 1, attempt: 3, ok: false, status: 524, retryable: true },
-        ]);
+        assert.equal(events[0].stage, 'complete');
+        assert.equal(events[0].ok, true);
+        assert.equal(events[0].final.toolLoop, false);
+        assert.equal(events[0].final_mcp.enabled, false);
     } finally {
         globalThis.fetch = originalFetch;
     }
 }
 
-async function testMissingCoordinatorConfigSkipsFinalModel() {
+async function testMissingCoordinatorConfigDoesNotSkipFinalModel() {
     const app = createApp();
     const originalFetch = globalThis.fetch;
     let finalCalls = 0;
@@ -774,7 +871,7 @@ async function testMissingCoordinatorConfigSkipsFinalModel() {
         if (String(url).includes('api.openai.example')) {
             finalCalls++;
             return new Response(JSON.stringify({
-                choices: [{ message: { content: 'should not happen' } }],
+                choices: [{ message: { content: 'final ok' } }],
             }), {
                 status: 200,
                 headers: { 'content-type': 'application/json' },
@@ -832,17 +929,15 @@ async function testMissingCoordinatorConfigSkipsFinalModel() {
             assert.equal(res.status, 200);
             const data = await res.json();
             const content = data.choices?.[0]?.message?.content || '';
-            assert.match(content, /coordinator报错/);
-            assert.match(content, new RegExp(testCase.name));
+            assert.equal(content, 'final ok');
 
             const events = await listAgentEvents(env, { limit: 3 });
-            assert.equal(events[0].stage, 'coordinator');
-            assert.equal(events[0].ok, false);
-            assert.equal(events[0].coordinator.skipped, testCase.name);
-            assert.equal(events[0].final.skipped, true);
+            assert.equal(events[0].stage, 'complete');
+            assert.equal(events[0].ok, true);
+            assert.equal(events[0].final_mcp.enabled, false);
         }
 
-        assert.equal(finalCalls, 0);
+        assert.equal(finalCalls, cases.length);
     } finally {
         for (const [key, value] of previous) {
             if (value === undefined) delete process.env[key];
@@ -1156,12 +1251,13 @@ async function testCoordinatorToolLoopPreservesThoughtSignature() {
 
 await testAgentStreamUsesSeparateStopChunk();
 await testAgentFinalCanUseAnthropicMessagesGatewayRoute();
+await testAgentFinalAnthropicCanRunMcpToolLoop();
 await testCoordinatorParsesNonStreamingNoRelevantInfo();
 await testCoordinatorDefaultsToStreamingNoRelevantInfo();
 await testCoordinatorToolLoopPreservesThoughtSignature();
 await testCoordinatorRetriesTransientGeminiFailures();
-await testCoordinatorFailureSkipsFinalModel();
-await testMissingCoordinatorConfigSkipsFinalModel();
+await testCoordinatorConfigIsIgnoredByAgentRoute();
+await testMissingCoordinatorConfigDoesNotSkipFinalModel();
 await testDebugEventStore();
 testSummarizeAiSettingsMasksKeys();
 testFullDebugHelpers();
