@@ -365,7 +365,9 @@ export async function runAnthropicFinalWithMcpTools({
         maxTokens,
     });
     initialBody.system = withOmbreMcpPolicySystem(initialBody.system, mcpServer);
+    initialBody.cache_control = { type: 'ephemeral' };
     debug.ombre_policy_injected = isOmbreMcpServerUrl(mcpServer?.url);
+    debug.automatic_cache_control = '5m';
     const workingMessages = Array.isArray(initialBody.messages) ? cloneJson(initialBody.messages) : [];
 
     for (let round = 0; round <= maxToolRounds; round++) {

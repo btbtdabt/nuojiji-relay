@@ -255,18 +255,89 @@ export function isOmbreMcpServerUrl(url) {
     }
 }
 
+const STABLE_SYSTEM_PREFIX_MIN_CHARS = 1200;
+
 function textBlock(text, cache = false) {
     const block = { type: 'text', text };
     if (cache) block.cache_control = { type: 'ephemeral' };
     return block;
 }
 
+function oneHourTextBlock(text) {
+    return {
+        type: 'text',
+        text,
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+    };
+}
+
+function firstDynamicSystemIndex(text) {
+    const source = String(text || '');
+    const markers = [
+        /^\[BIO\]\s+NOW:/gmi,
+        /\bUSER_LOCAL_TIME\s*=/gi,
+        /\bYOUR_LOCAL_TIME\b/gi,
+        /§NOW_[A-Z_]+§/g,
+        /\{\{RECENT_MESSAGES\}\}/g,
+        /\{\{IMPULSE_REASON\}\}/g,
+        /\{\{MEMORY_CONTEXT\}\}/g,
+        /^Recent\s*:/gmi,
+        /^Recent transcript\s*:/gmi,
+        /^Live conversation\b/gmi,
+        /^Reason\s*:/gmi,
+        /^Memory\s*:/gmi,
+    ];
+    let first = -1;
+    for (const marker of markers) {
+        marker.lastIndex = 0;
+        const match = marker.exec(source);
+        if (!match) continue;
+        first = first === -1 ? match.index : Math.min(first, match.index);
+    }
+    return first;
+}
+
+function nuojijiSystemBlocks(text) {
+    const source = String(text || '');
+    if (!source) return [];
+    const dynamicIndex = firstDynamicSystemIndex(source);
+    if (dynamicIndex <= 0) return [textBlock(source)];
+
+    const stablePrefix = source.slice(0, dynamicIndex);
+    const dynamicSuffix = source.slice(dynamicIndex);
+    if (stablePrefix.trim().length < STABLE_SYSTEM_PREFIX_MIN_CHARS || !dynamicSuffix.trim()) {
+        return [textBlock(source)];
+    }
+    return [oneHourTextBlock(stablePrefix), textBlock(dynamicSuffix)];
+}
+
+function normalizeSystemBlocks(system) {
+    if (!system) return [];
+    if (typeof system === 'string') return nuojijiSystemBlocks(system);
+    if (!Array.isArray(system)) return nuojijiSystemBlocks(String(system || ''));
+
+    const blocks = [];
+    for (const block of system) {
+        if (typeof block === 'string') {
+            blocks.push(...nuojijiSystemBlocks(block));
+            continue;
+        }
+        if (block && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
+            if (block.cache_control) {
+                blocks.push(block);
+            } else {
+                blocks.push(...nuojijiSystemBlocks(block.text));
+            }
+            continue;
+        }
+        blocks.push(block);
+    }
+    return blocks;
+}
+
 export function withOmbreMcpPolicySystem(system, mcpServer) {
     if (!isOmbreMcpServerUrl(mcpServer?.url)) return system;
 
     const policy = textBlock(OMBRE_MCP_POLICY_PROMPT, true);
-    if (!system) return [policy];
-    if (typeof system === 'string') return [policy, textBlock(system)];
-    if (Array.isArray(system)) return [policy, ...system];
-    return [policy, textBlock(String(system || ''))];
+    return [policy, ...normalizeSystemBlocks(system)];
 }

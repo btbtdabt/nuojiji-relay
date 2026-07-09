@@ -340,6 +340,7 @@ async function testAgentFinalInjectsCacheableOmbrePolicyForBtombreMcp() {
 
         assert.equal(res.status, 200);
         assert.equal(finalRequests.length, 1);
+        assert.deepEqual(finalRequests[0].body.cache_control, { type: 'ephemeral' });
         const system = finalRequests[0].body.system;
         assert.equal(Array.isArray(system), true);
         assert.match(system[0].text, /Ombre-Brain memory system/);
@@ -353,6 +354,100 @@ async function testAgentFinalInjectsCacheableOmbrePolicyForBtombreMcp() {
         const events = await listAgentEvents(env, { limit: 5 });
         const chatEvent = events.find((event) => event.type === 'agent_chat');
         assert.equal(chatEvent.final_mcp.ombre_policy_injected, true);
+        assert.equal(chatEvent.final_mcp.automatic_cache_control, '5m');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testAgentFinalCachesStableNuojijiSystemPrefixForOneHour() {
+    const app = createApp();
+    const env = {
+        OUTBOX: new FakeKv(),
+        RELAY_SECRET: 'test-secret',
+        AGENT_MCP_URL: 'https://brain.btombre.men/mcp',
+        AGENT_MCP_BEARER_TOKEN: 'mcp-secret',
+        AGENT_FINAL_API_URL: 'https://gateway.example.com/v1',
+        AGENT_FINAL_API_KEY: 'gateway-token',
+        AGENT_FINAL_MODEL: 'claude-opus-4-8-native',
+        AGENT_FINAL_API_TYPE: 'claude',
+        AGENT_FINAL_OMBRE_SESSION_ID: 'main',
+    };
+    const originalFetch = globalThis.fetch;
+    const finalRequests = [];
+    const stablePrompt = 'Stable character instruction. Keep this reusable. '.repeat(80);
+
+    globalThis.fetch = async (url, init) => {
+        const textUrl = String(url);
+        const body = JSON.parse(String(init?.body || '{}'));
+        if (textUrl.includes('brain.btombre.men')) {
+            if (body.method === 'initialize') {
+                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'mcp-session' },
+                });
+            }
+            if (body.method === 'notifications/initialized') {
+                return new Response('', { status: 202 });
+            }
+            if (body.method === 'tools/list') {
+                return new Response(JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: body.id,
+                    result: {
+                        tools: [{
+                            name: 'breath',
+                            description: 'Read memory.',
+                            inputSchema: { type: 'object', properties: {} },
+                        }],
+                    },
+                }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+        }
+        if (textUrl === 'https://gateway.example.com/v1/messages') {
+            finalRequests.push({ url: textUrl, headers: init?.headers || {}, body });
+            return new Response(JSON.stringify({
+                id: 'msg_final',
+                type: 'message',
+                role: 'assistant',
+                model: 'claude-opus-4-8-native',
+                content: [{ type: 'text', text: 'ok' }],
+                stop_reason: 'end_turn',
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        }
+        throw new Error(`unexpected fetch ${textUrl}`);
+    };
+
+    try {
+        const res = await app.fetch(new Request('https://relay.example/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer test-secret',
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                messages: [
+                    { role: 'system', content: `${stablePrompt}\nRecent:\nUser: dynamic hello` },
+                    { role: 'user', content: 'hi' },
+                ],
+            }),
+        }), env);
+
+        assert.equal(res.status, 200);
+        const system = finalRequests[0].body.system;
+        assert.match(system[0].text, /Ombre-Brain memory system/);
+        assert.deepEqual(system[1].cache_control, { type: 'ephemeral', ttl: '1h' });
+        assert.match(system[1].text, /Stable character instruction/);
+        assert.doesNotMatch(system[1].text, /Recent:/);
+        assert.match(system[2].text, /^Recent:\nUser: dynamic hello/);
+        assert.equal(system[2].cache_control, undefined);
+        assert.deepEqual(finalRequests[0].body.cache_control, { type: 'ephemeral' });
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -679,6 +774,7 @@ testFinalSettingsCurrentQueryPrefersRealUserText();
 await testAgentStreamUsesSeparateStopChunk();
 await testAgentFinalCanUseAnthropicMessagesGatewayRoute();
 await testAgentFinalInjectsCacheableOmbrePolicyForBtombreMcp();
+await testAgentFinalCachesStableNuojijiSystemPrefixForOneHour();
 await testAgentFinalSortsMcpToolsByNameForCacheStability();
 await testAgentFinalAnthropicCanRunMcpToolLoop();
 await testLegacyCoordinatorEnvIsIgnoredByAgentRoute();
