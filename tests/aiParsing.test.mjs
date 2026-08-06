@@ -222,7 +222,7 @@ function testSystemOnlyOpenAiRequestIsNotGivenSyntheticUserText() {
     const messages = [{ role: 'system', content: 'Generate one proactive message.' }];
     const body = buildChatRequestBody({
         apiUrl: 'https://gemini.amydong.workers.dev/v1',
-        model: 'gemini-3.5-flash',
+        model: 'gemini-3.6-flash',
         messages,
         temperature: 0.7,
         stream: true,

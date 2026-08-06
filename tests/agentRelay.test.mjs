@@ -46,6 +46,16 @@ function testEnvConfigAliases() {
     assert.equal(buildFinalSettings(env).currentQuery, '');
 }
 
+function testDefaultFinalModelMatchesApiType() {
+    const openAi = buildFinalSettings({});
+    assert.equal(openAi.apiType, 'openai');
+    assert.equal(openAi.mainApiModel, 'claude-opus-5');
+
+    const anthropic = buildFinalSettings({ AGENT_FINAL_API_TYPE: 'claude' });
+    assert.equal(anthropic.apiType, 'claude');
+    assert.equal(anthropic.mainApiModel, 'claude-opus-5-native');
+}
+
 function testFinalSettingsCurrentQueryIgnoresProactivePlaceholder() {
     const settings = buildFinalSettings({}, {
         messages: [
@@ -682,7 +692,7 @@ async function testLegacyCoordinatorEnvIsIgnoredByAgentRoute() {
         RELAY_SECRET: 'test-secret',
         AGENT_COORDINATOR_API_KEY: 'bad-coordinator-key',
         AGENT_COORDINATOR_BASE_URL: 'https://gateway.example.com/v1beta',
-        AGENT_COORDINATOR_MODEL: 'gemini-3.5-flash',
+        AGENT_COORDINATOR_MODEL: 'gemini-3.6-flash',
         AGENT_FINAL_API_URL: 'https://api.openai.example',
         AGENT_FINAL_API_KEY: 'final-key',
         AGENT_FINAL_MODEL: 'test-final-model',
@@ -769,6 +779,7 @@ function testFullDebugHelpers() {
 }
 
 testEnvConfigAliases();
+testDefaultFinalModelMatchesApiType();
 testFinalSettingsCurrentQueryIgnoresProactivePlaceholder();
 testFinalSettingsCurrentQueryPrefersRealUserText();
 await testAgentStreamUsesSeparateStopChunk();
