@@ -56,6 +56,19 @@ function testDefaultFinalModelMatchesApiType() {
     assert.equal(anthropic.mainApiModel, 'claude-opus-5-native');
 }
 
+function testDiagnosticProbeRequiresIsolatedSession() {
+    const settings = buildFinalSettings(
+        { AGENT_FINAL_OMBRE_SESSION_ID: 'main' },
+        {},
+        {
+            diagnosticProbe: 'production-alignment',
+            sessionId: 'main',
+        }
+    );
+
+    assert.deepEqual(settings.extraHeaders, { 'X-Ombre-Session-Id': 'main' });
+}
+
 function testFinalSettingsCurrentQueryIgnoresProactivePlaceholder() {
     const settings = buildFinalSettings({}, {
         messages: [
@@ -165,6 +178,51 @@ async function testAgentStreamUsesSeparateStopChunk() {
         assert.equal(chatEvent.final.toolLoop, false);
         assert.equal(chatEvent.final_mcp.enabled, false);
         assert.equal(chatEvent.final_mcp.skipped, 'final api is not Anthropic native');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
+async function testDiagnosticProbeHeadersReachFinalGateway() {
+    const app = createApp();
+    const env = {
+        OUTBOX: new FakeKv(),
+        RELAY_SECRET: 'test-secret',
+        AGENT_FINAL_API_URL: 'https://gateway.example.com/v1',
+        AGENT_FINAL_API_KEY: 'final-key',
+        AGENT_FINAL_MODEL: 'test-model',
+        AGENT_FINAL_OMBRE_SESSION_ID: 'main',
+    };
+    const originalFetch = globalThis.fetch;
+    let outgoingHeaders;
+
+    globalThis.fetch = async (_url, init) => {
+        outgoingHeaders = init?.headers || {};
+        return new Response(JSON.stringify({
+            choices: [{ message: { content: 'ok' } }],
+        }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    };
+
+    try {
+        const response = await app.fetch(new Request('https://relay.example/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer test-secret',
+                'content-type': 'application/json',
+                'x-ombre-diagnostic-probe': 'production-alignment',
+                'x-ombre-session-id': 'production-alignment-test',
+            },
+            body: JSON.stringify({
+                messages: [{ role: 'user', content: 'alignment probe' }],
+            }),
+        }), env);
+
+        assert.equal(response.status, 200);
+        assert.equal(outgoingHeaders['X-Ombre-Diagnostic-Probe'], 'production-alignment');
+        assert.equal(outgoingHeaders['X-Ombre-Session-Id'], 'production-alignment-test');
     } finally {
         globalThis.fetch = originalFetch;
     }
@@ -780,9 +838,11 @@ function testFullDebugHelpers() {
 
 testEnvConfigAliases();
 testDefaultFinalModelMatchesApiType();
+testDiagnosticProbeRequiresIsolatedSession();
 testFinalSettingsCurrentQueryIgnoresProactivePlaceholder();
 testFinalSettingsCurrentQueryPrefersRealUserText();
 await testAgentStreamUsesSeparateStopChunk();
+await testDiagnosticProbeHeadersReachFinalGateway();
 await testAgentFinalCanUseAnthropicMessagesGatewayRoute();
 await testAgentFinalInjectsCacheableOmbrePolicyForBtombreMcp();
 await testAgentFinalCachesStableNuojijiSystemPrefixForOneHour();

@@ -107,8 +107,23 @@ function buildCurrentQueryHint(messages) {
     return latestUserMessageText(messages) || transcriptQueryHintFromSystemMessages(messages);
 }
 
-export function buildFinalSettings(env, body = {}) {
+function requestHeader(context, name) {
+    if (typeof context?.req?.header === 'function') return context.req.header(name) || '';
+    return context?.req?.raw?.headers?.get?.(name) || '';
+}
+
+export function buildFinalSettings(env, body = {}, requestContext = {}) {
     const finalSessionId = envValue(env, ['AGENT_FINAL_OMBRE_SESSION_ID', 'AGENT_FINAL_SESSION_ID'], '');
+    const requestedSessionId = String(requestContext.sessionId || '').trim().slice(0, 200);
+    const diagnosticProbe = (
+        String(requestContext.diagnosticProbe || '').trim().toLowerCase() === 'production-alignment'
+        && requestedSessionId.startsWith('production-alignment-')
+    );
+    const extraHeaders = {};
+    if (diagnosticProbe || finalSessionId) {
+        extraHeaders['X-Ombre-Session-Id'] = diagnosticProbe ? requestedSessionId : finalSessionId;
+    }
+    if (diagnosticProbe) extraHeaders['X-Ombre-Diagnostic-Probe'] = 'production-alignment';
     const currentQuery = buildCurrentQueryHint(body?.messages || []);
     const apiType = envValue(env, ['AGENT_FINAL_API_TYPE'], 'openai');
     const defaultModel = apiType === 'claude' || apiType === 'anthropic'
@@ -119,7 +134,7 @@ export function buildFinalSettings(env, body = {}) {
         mainApiKey: envValue(env, ['AGENT_FINAL_API_KEY', 'CLAUDE_PROXY_API_KEY'], ''),
         mainApiModel: envValue(env, ['AGENT_FINAL_MODEL', 'CLAUDE_PROXY_MODEL'], defaultModel),
         apiType,
-        extraHeaders: finalSessionId ? { 'X-Ombre-Session-Id': finalSessionId } : undefined,
+        extraHeaders: Object.keys(extraHeaders).length ? extraHeaders : undefined,
         currentQuery,
         temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
         reasoningEffort: body.reasoning_effort || body.reasoningEffort || undefined,
@@ -196,7 +211,10 @@ export async function handleAgentChatCompletions(c) {
     const debugCharLimit = fullPromptDebugLimit(c.env);
     const timings = {};
 
-    const finalSettings = buildFinalSettings(c.env, body);
+    const finalSettings = buildFinalSettings(c.env, body, {
+        diagnosticProbe: requestHeader(c, 'X-Ombre-Diagnostic-Probe'),
+        sessionId: requestHeader(c, 'X-Ombre-Session-Id'),
+    });
     if (!finalSettings.mainApiUrl || !finalSettings.mainApiKey) {
         await logAgentEvent(c.env, {
             type: 'agent_chat',
